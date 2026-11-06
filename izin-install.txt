@@ -22,5 +22,5 @@
 #   198.51.100.25|Siti (toko B)|2027-01-15
 #
 # Server milik owner (jangan dihapus — instalasi bot/server owner memakai ini):
-146.190.107.177|server2 (milik owner)|2099-12-31
-139.59.239.169|SG2 (milik owner)|2099-12-31
+146.190.107.177|server1 (milik owner)|2099-12-31
+139.59.239.169|server2 (milik owner)|2099-12-31
