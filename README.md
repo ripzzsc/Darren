@@ -23,20 +23,22 @@ sudah private: baca token ke variabel lewat prompt tersembunyi,
 lalu pakai referensi variabel di header curl (bukan nilainya).
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bungkangeddeng-cyber/Darren/main/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/ripzzsc/Darren/main/install.sh -o install.sh
 chmod +x install.sh
 ./install.sh
 ```
 
-Installer akan meminta token GitHub baca repo, BOT_TOKEN, ADMIN_ID,
-dan konfigurasi opsional lewat prompt (tidak di-echo, tidak
-disimpan di dalam script), membuat auth API acak, menginstal
-bot-js + VPN API, dan instalasi Xray (praktis wajib: menjawab N
-membuat verifikasi akhir gagal, jadi install dinyatakan gagal).
-Di akhir installer juga meminta token baca izin menu (disimpan
-terkunci di `/etc/xray/izin-token`, mode 600) — wajib setelah repo
-private, supaya menu tetap bisa membaca daftar izin. BotVPN2 lama
-tidak diinstal secara default.
+Installer akan meminta token GitHub baca repo, domain, dan
+konfigurasi opsional lewat prompt, membuat auth API acak, menginstal
+VPN API + Xray + menu (praktis wajib: menjawab N membuat verifikasi
+akhir gagal, jadi install dinyatakan gagal).
+Bot Telegram (bot-js) TIDAK diinstal di awal secara default.
+Instal bot nanti lewat menu: jalankan `menu`, pilih 9 (MENU BOTELE),
+lalu m-bot -> Install Bot, dan isi BOT_TOKEN + ADMIN_ID di sana.
+Atau jalankan langsung di VPS: `install-botjs`.
+Bila mau bot langsung terinstal saat install awal, jalankan
+`./install.sh --with-bot` — baru di mode itu BOT_TOKEN dan ADMIN_ID
+ditanya di awal. BotVPN2 lama tidak diinstal secara default.
 
 Bila kamu sudah meng-clone repo ini ke VPS, cukup jalankan
 `./install.sh` dari root repo — installer akan memakai source lokal.
@@ -53,7 +55,7 @@ Bila repo sudah di-private-kan (rencana), pakai pola aman yang sama
 seperti install (token lewat variabel prompt, bukan nilai di perintah):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bungkangeddeng-cyber/Darren/main/uninstall.sh -o uninstall.sh
+curl -fsSL https://raw.githubusercontent.com/ripzzsc/Darren/main/uninstall.sh -o uninstall.sh
 chmod +x uninstall.sh
 ./uninstall.sh
 ```
@@ -73,7 +75,7 @@ Yang sengaja TIDAK dihapus: OS dasar, perkakas generik
 (curl, git, wget, unzip, python3, sqlite3, openssl), repo apt
 NodeSource, kunci/konfigurasi SSH, dan direktori backup. Entri server di
 daftar izin permission tetap ada di repo (tidak mengganggu); hapus
-barisnya dari `v4-main/Cdy/izin-servers.txt` bila server itu tidak
+barisnya dari `izin-install.txt` bila server itu tidak
 dipakai lagi.
 
 Bila isi `uninstall.sh` yang terunduh belum menyebut `cek-izin`,
@@ -87,14 +89,17 @@ Menu SSH memanggil helper [v4-main/Cdy/cek-izin](v4-main/Cdy/cek-izin)
 di awal tiap script; helper yang sama juga ikut di dalam
 `v4-main/Cdy/menu.zip` (terpasang ke `/usr/bin/cek-izin`).
 
-Daftar server yang diizinkan ada di
-[v4-main/Cdy/izin-servers.txt](v4-main/Cdy/izin-servers.txt),
-format tiap baris: `IP|TANGGAL_EXPIRED(YYYY-MM-DD)|NAMA|STATUS`
-(`STATUS`: `active` / `suspended`). Tambah server baru cukup tambah
-satu baris di file itu lalu push; menu membaca file itu dari GitHub
-(cache 6 jam di VPS). Alasan penolakan dicatat jelas, dan log
-auditnya ada di `/var/log/izin.log` di VPS. Jangan taruh secret
-di file ini.
+Satu allowlist untuk install DAN menu, di
+[izin-install.txt](izin-install.txt), format tiap baris: `IP|Nama`
+(Nama opsional; IP saja tanpa `|` juga boleh). Baris `#` dan baris
+kosong diabaikan. Tanpa tanggal expired, tanpa kolom STATUS.
+Tambah server baru cukup tambah satu baris di file itu lalu push;
+menu membaca file itu dari GitHub (cache 6 jam di VPS). IP yang
+tidak ada di file itu = instalasi dan menu DITOLAK. Alasan penolakan
+dicatat jelas, dan log auditnya ada di `/var/log/izin.log` di VPS.
+Jangan taruh secret di file ini.
+File [v4-main/Cdy/izin-servers.txt](v4-main/Cdy/izin-servers.txt)
+berisi allowlist yang sama (cermin, agar menu lama tetap jalan).
 
 Selama repo masih publik, `cek-izin` jalan tanpa token. Setelah repo
 di-private-kan (rencana), `cek-izin` membaca allowlist memakai token
@@ -188,10 +193,13 @@ masih harus dikerjakan — installer tidak mengklaimnya sudah beres:
    bebaskan port 80, lalu jalankan `change-domain` dari menu dan
    pastikan sertifikat terbit + haproxy `:443` aktif. Ulangi gate
    (nginx `-t`, haproxy `-c`, Xray listen) sampai verdict domain JALAN.
-2. **Kredensial opsional.** Bila saat install dikosongkan tapi
-   fiturnya dibutuhkan, isi lisensi IP sewa, `SIDOMPUL_API_KEY`,
-   `HC_API_KEY`, dan variabel CloudFront (lihat atas), lalu restart
-   bot. Kredensial pihak ketiga tidak pernah ditulis di repo/chat/log.
+2. **Bot Telegram (bila dibutuhkan).** Instal lewat menu (menu 9 ->
+   m-bot -> Install Bot) dan isi BOT_TOKEN + ADMIN_ID di sana.
+   Kredensial opsional yang dikosongkan saat install bot (lisensi IP
+   sewa, `SIDOMPUL_API_KEY`, `HC_API_KEY`, CloudFront) bisa diisi
+   ulang dengan menjalankan `install-botjs` lagi — nilai lama yang
+   sudah ada dipakai sebagai default bila dikosongkan. Kredensial
+   pihak ketiga tidak pernah ditulis di repo/chat/log.
 3. **SlowDNS / Noobz / Zivpn manual.** Ketiga stack itu TIDAK
    dipasang installer ini — pasang manual dari menu/script terkait
    bila dibutuhkan, dan uji masing-masing sebelum jualan.
@@ -228,10 +236,12 @@ penghapusan apa pun):
 
 ## Struktur
 
-- `install.sh` — installer VPS baru (dukung token repo private + token baca izin menu)
+- `install.sh` — installer VPS baru (bot TIDAK diinstal di awal secara default; pakai `--with-bot` bila mau bot langsung terinstal; dukung token repo private + token baca izin menu)
 - `uninstall.sh` — uninstall total (backup dulu, lalu hapus bot, API, Xray, menu, permission)
 - `v4-main/Cdy/cek-izin` — helper permission menu (juga di dalam menu.zip)
-- `v4-main/Cdy/izin-servers.txt` — daftar server yang diizinkan (IP|expired|nama|status)
+- `izin-install.txt` — daftar server yang diizinkan (IP|Nama, satu format untuk install dan menu)
+- `v4-main/Cdy/izin-servers.txt` — cermin allowlist yang sama (untuk menu lama)
+- `v4-main/install-bot.sh` — installer bot Telegram mandiri, dipanggil dari menu (juga terpasang sebagai `/usr/bin/install-botjs`)
 - `v4-main/` — source yang sudah diperbaiki (bot-js, BotVPN2, Api, Cfg, Fls, Vpn, dll)
 - `v4-main/CHANGELOG-FIXED.md` — apa yang diperbaiki dan apa yang belum
 - `BUGS-v4-main.md` — laporan audit bug asli

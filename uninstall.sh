@@ -355,7 +355,7 @@ main() {
       echo "ERROR: verifikasi backup $_src gagal — uninstall DIBATALKAN." >&2; exit 1
     fi
   }
-  for d in /root/bot-js /etc/vpn-api /etc/xray /etc/systemd/system/xray.service.d /etc/bot; do
+  for d in /root/bot-js /etc/vpn-api /etc/xray /etc/systemd/system/xray.service.d /etc/bot /etc/ssh/.ssh.db /etc/vmess /etc/vless /etc/trojan /etc/shadowsocks; do
     backup_uninstall_item "$d"
   done
   # FASE 2: backup lebih lengkap — API, unit systemd, entry point menu, TLS.

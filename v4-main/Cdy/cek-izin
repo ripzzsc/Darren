@@ -1,25 +1,22 @@
 #!/bin/bash
-# cek-izin — permission baru menu Darren, pengganti gate lama.
-# Prinsip: izin dikendalikan PENUH dari repo GitHub user sendiri, bukan server luar.
-# Sumber allowlist: repo Darren, file v4-main/Cdy/izin-servers.txt
-# Format tiap baris: IP|TANGGAL_EXPIRED(YYYY-MM-DD)|NAMA_SERVER|STATUS
-# STATUS: active | suspended
+# cek-izin — permission menu Darren.
+# Izin dikendalikan penuh dari repo GitHub sendiri, bukan server luar.
+# Sumber allowlist: https://raw.githubusercontent.com/ripzzsc/Darren/main/izin-install.txt
+# Format (SATU format untuk install dan menu): satu IP per baris, opsional |Nama.
+#   Contoh: 203.0.113.10|Budi — tanpa tanggal expired, tanpa kolom STATUS.
+#   Baris # dan baris kosong diabaikan. IP tidak ada di file = DITOLAK.
 # Cache lokal: /etc/xray/izin-cache.txt (TTL 6 jam). Bila GitHub tidak terjangkau
-# dan cache masih berlaku, izin tetap berlaku (grace offline, bukan langsung ditolak).
-# Repo private: pasang token baca GitHub (read-only, khusus repo Darren) di
-# /etc/xray/izin-token (mode 600, root saja). Tanpa token, cek-izin mencoba
-# tanpa autentikasi (jalan selama repo masih publik, gagal setelah repo private).
-# Token TIDAK PERNAH dicetak, di-echo, atau ditulis ke log oleh script ini.
+# dan cache masih berlaku, izin tetap berlaku. Bila cache kadaluarsa, DITOLAK.
+# Repo private: pasang token baca GitHub di /etc/xray/izin-token (mode 600).
+# Token TIDAK PERNAH dicetak atau ditulis ke log oleh script ini.
 # Keluar: 0 = lolos, 1 = ditolak (alasan dicetak jelas).
-# Tidak ada secret di dalam script ini.
 
-ALLOWLIST_URL="https://raw.githubusercontent.com/bungkangeddeng-cyber/Darren/main/v4-main/Cdy/izin-servers.txt"
+ALLOWLIST_URL="https://raw.githubusercontent.com/ripzzsc/Darren/main/izin-install.txt"
 CACHE_FILE="/etc/xray/izin-cache.txt"
 TOKEN_FILE="/etc/xray/izin-token"
 CACHE_TTL=21600
 LOG_FILE="/var/log/izin.log"
 
-# IP VPS: utamakan IPv4 karena allowlist memakai IPv4.
 detect_ip() {
   local ip=""
   if [ -f /usr/bin/ipsave ]; then
@@ -32,27 +29,18 @@ detect_ip() {
 }
 
 MYIP="$(detect_ip)"
-TODAY="$(date +%F)"
 
 log() { echo "$(date -Iseconds) ip=${MYIP:-?} hasil=$1 alasan=$2" >> "$LOG_FILE" 2>/dev/null || true; }
 
 deny() {
   echo "IZIN DITOLAK: $1"
-  echo "Perbaiki: tambah/aktifkan IP ini di v4-main/Cdy/izin-servers.txt di repo Darren, lalu jalankan ulang menu."
-  log "DITOLAK" "$1"
-  exit 1
-}
-
-deny_fetch() {
-  echo "IZIN DITOLAK: $1"
-  echo "Perbaiki: $2"
+  echo "Perbaiki: tambahkan IP ini ke izin-install.txt di repo Darren, lalu jalankan ulang menu."
   log "DITOLAK" "$1"
   exit 1
 }
 
 [ -z "$MYIP" ] && deny "IP IPv4 VPS tidak terdeteksi"
 
-# Token baca (bila ada): hanya dipakai sebagai header Authorization, tidak pernah dicetak.
 TOKEN=""
 if [ -r "$TOKEN_FILE" ]; then
   TOKEN="$(tr -d '[:space:]' < "$TOKEN_FILE" 2>/dev/null)"
@@ -62,57 +50,25 @@ AUTH_ARGS=()
 
 # Ambil allowlist terbaru; bila gagal, pakai cache bila masih berlaku.
 FETCH_OK=0
-FETCH_REASON=""
 HTTP_CODE="$(curl -sSL -o "${CACHE_FILE}.tmp" -w "%{http_code}" --max-time 15 "${AUTH_ARGS[@]}" "$ALLOWLIST_URL" 2>/dev/null)"
-CURL_RC=$?
-if [ "$CURL_RC" -ne 0 ]; then
-  HTTP_CODE="000"
-fi
-if [ "$HTTP_CODE" = "200" ]; then
-  if mv "${CACHE_FILE}.tmp" "$CACHE_FILE" 2>/dev/null; then
-    FETCH_OK=1
-  else
-    FETCH_REASON="cache lokal tidak bisa ditulis"
-  fi
-else
-  rm -f "${CACHE_FILE}.tmp"
-  case "$HTTP_CODE" in
-    401) FETCH_REASON="GitHub menolak token (401 — token salah, kedaluwarsa, atau dicabut; perbarui /etc/xray/izin-token)" ;;
-    403) FETCH_REASON="GitHub menolak akses (403 — token tidak punya akses baca ke repo Darren)" ;;
-    404) FETCH_REASON="allowlist tidak ditemukan (404 — repo sudah private tapi tanpa token baca, atau file dipindah)" ;;
-    000) FETCH_REASON="GitHub tidak terjangkau (jaringan)" ;;
-    *)   FETCH_REASON="gagal unduh allowlist (HTTP $HTTP_CODE)" ;;
-  esac
-fi
+[ "$HTTP_CODE" = "200" ] && mv "${CACHE_FILE}.tmp" "$CACHE_FILE" 2>/dev/null && FETCH_OK=1
+[ "$FETCH_OK" -eq 0 ] && rm -f "${CACHE_FILE}.tmp"
 if [ "$FETCH_OK" -eq 0 ]; then
   if [ -f "$CACHE_FILE" ]; then
     AGE=$(( $(date +%s) - $(stat -c %Y "$CACHE_FILE" 2>/dev/null || echo 0) ))
-    if [ "$AGE" -gt "$CACHE_TTL" ]; then
-      if [ -z "$TOKEN" ]; then
-        deny_fetch "allowlist tidak terjangkau dan cache sudah kadaluarsa (${AGE} detik): $FETCH_REASON" "bila repo sudah private, pasang token baca di /etc/xray/izin-token (chmod 600), lalu jalankan ulang menu"
-      else
-        deny_fetch "allowlist tidak terjangkau dan cache sudah kadaluarsa (${AGE} detik): $FETCH_REASON" "perbarui token baca di /etc/xray/izin-token, lalu jalankan ulang menu"
-      fi
-    fi
+    [ "$AGE" -gt "$CACHE_TTL" ] && deny "allowlist tidak terjangkau (HTTP $HTTP_CODE) dan cache sudah kadaluarsa"
   else
-    if [ -z "$TOKEN" ]; then
-      deny_fetch "allowlist tidak terjangkau dan belum ada cache: $FETCH_REASON" "bila repo sudah private, pasang token baca di /etc/xray/izin-token (chmod 600), lalu jalankan ulang menu"
-    else
-      deny_fetch "allowlist tidak terjangkau dan belum ada cache: $FETCH_REASON" "perbarui token baca di /etc/xray/izin-token, lalu jalankan ulang menu"
-    fi
+    deny "allowlist tidak terjangkau (HTTP $HTTP_CODE) dan belum ada cache"
   fi
 fi
 
-LINE="$(grep -m1 "^${MYIP}|" "$CACHE_FILE" 2>/dev/null)"
+# Cocokkan IP persis di awal baris (titik di-escape).
+MYIP_ESC="${MYIP//./\\.}"
+LINE="$(grep -m1 -E "^${MYIP_ESC}(\\|.*)?$" "$CACHE_FILE" 2>/dev/null || true)"
 [ -z "$LINE" ] && deny "IP $MYIP tidak terdaftar di allowlist"
 
-EXPIRY="$(echo "$LINE" | cut -d'|' -f2)"
-NAMA="$(echo "$LINE" | cut -d'|' -f3)"
-STATUS="$(echo "$LINE" | cut -d'|' -f4)"
-[ "$STATUS" != "active" ] && deny "server $NAMA ($MYIP) berstatus $STATUS"
-if [[ "$EXPIRY" < "$TODAY" ]]; then
-  deny "izin server $NAMA ($MYIP) sudah expired pada $EXPIRY"
-fi
+NAMA="${LINE#*|}"
+[ "$NAMA" = "$LINE" ] && NAMA=""
 
-log "LOLOS" "server=$NAMA expired=$EXPIRY"
+log "LOLOS" "server=${NAMA:-tanpa nama}"
 exit 0

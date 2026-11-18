@@ -40,7 +40,8 @@ if [[ ! -f /root/backup.zip ]]; then
     wget -O /root/backup.zip "$backup_url"
   fi
 
-  if [[ $? -ne 0 ]]; then
+  _dl_rc=$?
+  if [[ $_dl_rc -ne 0 ]]; then
     echo -e "[ ${green}ERROR${NC} ] • Gagal mendownload file backup.zip. Pastikan URL benar dan koneksi internet tersedia."
     exit 1
   fi
@@ -74,13 +75,10 @@ echo -e "[ ${green}INFO${NC} ] • Starting to restore data..."
 
 sleep 1
 
-cd /root/backup
-if [[ $? -ne 0 ]]; then
-echo "Direktori /root/backup tidak ditemukan! Restore dibatalkan, backup.zip dipertahankan."
+if ! cd /root/backup; then
+  echo "Direktori /root/backup tidak ditemukan! Restore dibatalkan, backup.zip dipertahankan."
   exit 1
 fi
-rm -f /root/backup.zip &> /dev/null
-
 echo -e "[ ${green}INFO${NC} ] • Please Wait, Restoring In Process Now..."
 sleep 1
 
@@ -123,7 +121,17 @@ if [ -d dropbear-keys ]; then mkdir -p /etc/dropbear && cp -r dropbear-keys/. /e
 if [ -f ws ]; then cp ws /usr/bin/ws &>/dev/null && chmod +x /usr/bin/ws; fi
 if [ -f tun.conf ]; then cp tun.conf /usr/bin/tun.conf &>/dev/null; fi
 if [ -d cron.d ]; then mkdir -p /etc/cron.d && cp -r cron.d/. /etc/cron.d/ &>/dev/null; fi
+if [ -f bot-db/bot.db ]; then mkdir -p /root/bot-js/data && cp bot-db/bot.db /root/bot-js/data/bot.db && chmod 600 /root/bot-js/data/bot.db; fi
+if [ -f bot-js.env ]; then mkdir -p /root/bot-js && cp bot-js.env /root/bot-js/.env && chmod 600 /root/bot-js/.env; fi
+if [ -d vpn-api ]; then mkdir -p /etc/vpn-api && cp -r vpn-api/. /etc/vpn-api/ && [ -f /etc/vpn-api/auth.env ] && chmod 600 /etc/vpn-api/auth.env; fi
+if [ -f vpn-api.py ]; then cp vpn-api.py /root/vpn-api.py; fi
+if [ -f var.txt ]; then mkdir -p /usr/bin/kyt && cp var.txt /usr/bin/kyt/var.txt; fi
+if [ -d systemd ]; then mkdir -p /etc/systemd/system && cp systemd/*.service /etc/systemd/system/ 2>/dev/null; systemctl daemon-reload 2>/dev/null || true; fi
+chmod 600 /etc/shadow /etc/gshadow 2>/dev/null || true
 
 echo -e "[ ${green}INFO${NC} ] • Restart service agar konfigurasi hasil restore aktif... "
-for _svc in xray haproxy nginx dropbear ssh ws; do systemctl restart "$_svc" >/dev/null 2>&1 || true; done
+if [ -x /usr/local/bin/xray ] && [ -f /etc/xray/config.json ]; then /usr/local/bin/xray run -test -config /etc/xray/config.json >/dev/null 2>&1 || echo "PERINGATAN: /etc/xray/config.json hasil restore gagal dites, xray tidak di-restart."; fi
+for _svc in xray haproxy nginx dropbear ssh vpn-api; do systemctl restart "$_svc" >/dev/null 2>&1 || true; done
+if command -v pm2 >/dev/null 2>&1 && [ -f /root/bot-js/app.js ]; then pm2 restart darren-bot >/dev/null 2>&1 || pm2 start /root/bot-js/app.js --name darren-bot >/dev/null 2>&1 || true; pm2 save >/dev/null 2>&1 || true; fi
+rm -f /root/backup.zip 2>/dev/null || true
 echo -e "[ ${green}INFO${NC} ] • Restore selesai!"

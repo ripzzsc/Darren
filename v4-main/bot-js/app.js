@@ -943,6 +943,11 @@ bot.on('text', async (ctx) => {
       const https = require('https');
       const dbPath = path.join(__dirname, 'data', 'bot.db');
       const tmpPath = dbPath + '.restore-tmp';
+      // Safety: keep current DB before overwrite, and validate the upload.
+      const _safetyDir = path.join(__dirname, 'data', 'backups');
+      try { fs.mkdirSync(_safetyDir, { recursive: true }); } catch (_) {}
+      const _ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      try { if (fs.existsSync(dbPath)) fs.copyFileSync(dbPath, path.join(_safetyDir, `before-restore-${_ts}.db`)); } catch (_) {}
       await new Promise((resolve, reject) => {
         https.get(link.href, (res) => {
           const ws = fs.createWriteStream(tmpPath);
@@ -951,6 +956,10 @@ bot.on('text', async (ctx) => {
           ws.on('error', reject);
         }).on('error', reject);
       });
+      const _st = fs.statSync(tmpPath);
+      if (_st.size === 0 || _st.size > 20 * 1024 * 1024) { fs.unlinkSync(tmpPath); throw new Error('Ukuran file restore tidak valid (maks 20 MB).'); }
+      const _hdr = fs.readFileSync(tmpPath).subarray(0, 16).toString('latin1');
+      if (!_hdr.startsWith('SQLite format 3')) { fs.unlinkSync(tmpPath); throw new Error('File bukan database SQLite yang valid.'); }
       fs.copyFileSync(tmpPath, dbPath);
       fs.unlinkSync(tmpPath);
       sessions.delete(ctx.chat.id);
@@ -3096,7 +3105,7 @@ bot.action('adm_api_apply', async (ctx) => {
   await safeCb(ctx);
   sessions.delete(ctx.chat.id);
   await ctx.reply('🔄 <b>Menerapkan &amp; me-restart bot...</b> Tunggu beberapa detik, lalu cek panel admin lagi.', { parse_mode: 'HTML' });
-  setTimeout(() => { try { require('child_process').exec('pm2 restart ripzz-bot-js'); } catch (_) {} }, 800);
+  setTimeout(() => { try { require('child_process').exec('pm2 restart darren-bot'); } catch (_) {} }, 800);
 });
 bot.action('adm_api_register', async (ctx) => {
   if (!await admin.hasAdminAccess(ctx)) { await safeCb(ctx); return; }

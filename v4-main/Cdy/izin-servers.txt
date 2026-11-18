@@ -1,7 +1,9 @@
-# Allowlist permission baru menu Darren.
-# Format tiap baris: IP|EXPIRY(YYYY-MM-DD)|NAMA|STATUS
-# STATUS: active | suspended
-# Cara menambah server: tambah satu baris di file ini di repo Darren, commit + push.
-# Menu membaca file ini dari GitHub (repo sendiri). Jangan taruh secret di file ini.
-146.190.107.177|2027-11-03|server2|active
-206.189.91.251|2027-11-03|darren|active
+# Allowlist menu Darren — ISINYA SAMA dengan izin-install.txt di root repo.
+# Satu allowlist untuk install DAN menu, format: IP|Nama (tanpa expired/status).
+# File ini dipertahankan sebagai cermin agar menu lama yang membaca file ini
+# tetap jalan; sumber utama adalah izin-install.txt.
+# Tambah server: tambah baris yang sama di kedua file, lalu commit + push.
+# Jangan taruh secret di file ini.
+146.190.107.177|server2 (milik owner)
+43.159.43.177|BIZNET (milik owner)
+206.189.91.251|darren

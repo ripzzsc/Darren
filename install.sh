@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
-# DARREN_INSTALLER_VERSION=fix-total-20261105-08
+# DARREN_INSTALLER_VERSION=fix-total-20261118-01
 # Installer v4-main (versi perbaikan, LENGKAP) untuk VPS baru.
 # Penanda versi yang bisa di-grep: DARREN_INSTALLER_VERSION di atas.
 # Xray dipin ke SATU rilis resmi: lihat XRAY_TAG_PIN di bawah (bukan latest mengambang).
-# Yang diinstal: bot-js (Telegram) + VPN API lokal (port 5890, localhost saja),
+# Yang diinstal: VPN API lokal (port 5890, localhost saja),
 # Xray (wajib jalan; default YA), menu utama SSH (menu.zip -> /usr/bin), dan vnstat untuk traffic menu.
+# Bot Telegram (bot-js) TIDAK diinstal di awal secara default.
+# Instal bot nanti lewat menu: menu -> 9 (MENU BOTELE) -> m-bot -> Install Bot,
+# atau jalankan langsung: install-botjs
+# Pakai flag --with-bot bila mau bot langsung terinstal saat install awal.
 # Mode --remote: instalasi stack VPN TANPA bot Telegram (server remote yang
 # didaftarkan ke bot utama). Cocok untuk "Install Server Baru" lewat bot:
 # bot utama SSH ke VPS baru dan menjalankan installer ini dengan --remote.
@@ -15,13 +19,14 @@
 #   chmod +x install.sh
 #   ./install.sh
 #   ./install.sh --total   # install total: backup + hapus instalasi lama, lalu install baru
+#   ./install.sh --with-bot # bot Telegram langsung terinstal saat install awal (default: TIDAK)
 #   ./install.sh --remote  # server remote: stack VPN saja, tanpa bot Telegram
 #                        # (non-interaktif; domain lewat env REMOTE_DOMAIN)
 # Repo Darren saat ini PUBLIK, jadi unduhan di atas tidak butuh token.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-DARREN_INSTALLER_VERSION="fix-total-20261105-08"
+DARREN_INSTALLER_VERSION="fix-total-20261118-01"
 XRAY_TAG_PIN="v26.10.31"
 
 trap 'echo "=== VERDICT: INSTALL GAGAL (perintah gagal; perbaiki pesan error di atas lalu jalankan ulang) ===" >&2' ERR
@@ -39,15 +44,20 @@ fi
 # ---------- Argumen ----------
 TOTAL=0
 REMOTE=0
+WITH_BOT=0
 for arg in "$@"; do
   case "$arg" in
     --total) TOTAL=1 ;;
     --remote) REMOTE=1 ;;
+    --with-bot) WITH_BOT=1 ;;
     --help|-h)
-      echo "Pakai: ./install.sh [--total] [--remote]"
+      echo "Pakai: ./install.sh [--total] [--remote] [--with-bot]"
       echo "  --total   Install total: backup lalu hapus semua instalasi SC lama,"
       echo "            termasuk Node/PM2/vnstat, baru install baru."
       echo "  --remote  Server remote: instal stack VPN saja TANPA bot Telegram."
+      echo "  --with-bot  Instal bot Telegram langsung saat install awal."
+      echo "            Default (tanpa flag ini): bot TIDAK diinstal di awal;"
+      echo "            instal nanti lewat menu (menu 9 -> m-bot -> Install Bot)."
       exit 0
       ;;
     *) echo "Argumen tidak dikenal: $arg (pakai --help)" >&2; exit 1 ;;
@@ -139,6 +149,11 @@ siapkan_install_total() {
   backup_item /root/bot-js "$backup"
   backup_item /etc/vpn-api "$backup"
   backup_item /etc/xray "$backup"
+  backup_item /etc/ssh/.ssh.db "$backup"
+  backup_item /etc/vmess "$backup"
+  backup_item /etc/vless "$backup"
+  backup_item /etc/trojan "$backup"
+  backup_item /etc/shadowsocks "$backup"
   backup_item /etc/systemd/system/xray.service.d "$backup"
   backup_item /etc/bot "$backup"
   backup_item /etc/haproxy "$backup"
@@ -233,6 +248,10 @@ else
 fi
 
 # ---------- 4b. Izin install (allowlist GitHub) ----------
+# Format izin-install.txt (SATU format untuk install dan menu):
+#   satu IP per baris, opsional |Nama. Baris # dan baris kosong diabaikan.
+#   Contoh: 203.0.113.10|Budi
+#   Tanpa tanggal expired dan tanpa kolom STATUS.
 check_install_license() {
   local allow="$SRC_DIR/izin-install.txt"
   if [ ! -f "$allow" ]; then
@@ -248,28 +267,18 @@ check_install_license() {
     echo "ERROR: IP publik VPS ini tidak bisa ditentukan." >&2
     exit 1
   fi
-  local today
-  today="$(date +%F)"
-  local found_name="" found_exp=""
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in ''|'#'*) continue ;; esac
-    local f_ip f_name f_exp
-    f_ip="$(echo "$line" | cut -d'|' -f1 | tr -d '[:space:]')"
-    f_name="$(echo "$line" | cut -d'|' -f2 | sed 's/^ *//;s/ *$//')"
-    f_exp="$(echo "$line" | cut -d'|' -f3 | tr -d '[:space:]')"
-    [ "$f_ip" = "$my_ip" ] || continue
-    found_name="$f_name"; found_exp="$f_exp"
-    break
-  done < "$allow"
-  if [ -z "$found_exp" ]; then
+  # Cocokkan IP persis di awal baris (titik di-escape agar tidak cocok IP lain).
+  local my_ip_esc="${my_ip//./\.}"
+  local line=""
+  line="$(grep -m1 -E "^${my_ip_esc}(\|.*)?$" "$allow" 2>/dev/null || true)"
+  if [ -z "$line" ]; then
     echo "ERROR: IP VPS ini ($my_ip) TIDAK TERDAFTAR di izin-install.txt." >&2
+    echo "Tambahkan baris '$my_ip|nama-server' ke izin-install.txt di repo, lalu jalankan ulang." >&2
     exit 1
   fi
-  if [[ "$today" > "$found_exp" ]]; then
-    echo "ERROR: Masa sewa untuk IP $my_ip sudah BERAKHIR pada $found_exp." >&2
-    exit 1
-  fi
-  echo "Izin install OK: $my_ip — ${found_name:-tanpa nama} (berlaku s.d. $found_exp)."
+  local found_name="${line#*|}"
+  [ "$found_name" = "$line" ] && found_name=""
+  echo "Izin install OK: $my_ip — ${found_name:-tanpa nama}."
 }
 
 if [ "$REMOTE" = 0 ]; then
@@ -279,6 +288,9 @@ else
 fi
 
 # ---------- 5. Prompt konfigurasi ----------
+# Default: bot Telegram TIDAK diinstal di awal (WITH_BOT=0).
+# BOT_TOKEN/ADMIN_ID dan field opsional bot hanya ditanya bila --with-bot.
+# Tanpa --with-bot, instal bot nanti lewat menu (install-bot.sh).
 if [ "$REMOTE" = 1 ]; then
   VPN_DOMAIN="${REMOTE_DOMAIN:-}"
   BOT_TOKEN=""; ADMIN_ID=""; H2H_URL=""; H2H_KEY=""
@@ -290,9 +302,10 @@ if [ "$REMOTE" = 1 ]; then
     echo "ERROR: mode --remote wajib env REMOTE_MAIN_IP." >&2
     exit 1
   fi
-else
+elif [ "$WITH_BOT" = 1 ]; then
   echo ""
   echo "Isi konfigurasi berikut. Kosongkan yang opsional bila belum ada."
+  echo "Mode --with-bot: bot Telegram langsung terinstal saat install awal."
   read -r -p "Domain VPS kamu (contoh: vpn.contoh.com, kosong = localhost saja): " VPN_DOMAIN || true
   while true; do
     read -r -s -p "BOT_TOKEN Telegram (dari BotFather): " BOT_TOKEN || true
@@ -341,9 +354,27 @@ else
     DIGI_KEY=""
   fi
   read -r -p "Instal Xray? [Y/n, kosong = YA] " install_xray || true
+else
+  echo ""
+  echo "Bot Telegram TIDAK diinstal di awal."
+  echo "Instal nanti lewat menu: menu -> 9 (MENU BOTELE) -> m-bot -> Install Bot, atau jalankan: install-botjs"
+  read -r -p "Domain VPS kamu (contoh: vpn.contoh.com, kosong = localhost saja): " VPN_DOMAIN || true
+  BOT_TOKEN=""; ADMIN_ID=""; H2H_URL=""; H2H_KEY=""
+  GH_IP_TOKEN=""; GH_IP_OWNER=""; GH_IP_REPO=""; GH_IP_FILE=""
+  SIDOMPUL_API_KEY=""; HC_API_KEY=""
+  CF_DOMAIN=""; CF_VMESS_UUID=""; CF_VLESS_UUID=""; CF_TROJAN_PASSWORD=""
+  DIGI_USER=""; DIGI_KEY=""
+  read -r -p "Instal Xray? [Y/n, kosong = YA] " install_xray || true
 fi
 
-VPN_API_AUTH="$(openssl rand -hex 24)" || { echo "ERROR: gagal mengacak VPN_API_AUTH." >&2; exit 1; }
+# Pakai auth API yang sudah ada bila ada (agar bot lama / bot yang
+# diinstal nanti lewat menu tetap cocok dengan API). Bila belum ada, generate baru.
+if [ -f /etc/vpn-api/auth.env ]; then
+  VPN_API_AUTH="$(grep '^VPN_API_AUTH=' /etc/vpn-api/auth.env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '[:space:]')"
+fi
+if [ -z "${VPN_API_AUTH:-}" ]; then
+  VPN_API_AUTH="$(openssl rand -hex 24)" || { echo "ERROR: gagal mengacak VPN_API_AUTH." >&2; exit 1; }
+fi
 VPN_API_BASE="http://127.0.0.1:5890"
 
 # ---------- 3b. Install total handling ----------
@@ -362,7 +393,7 @@ elif [ -d "$BOT_DIR" ] || [ -f /usr/bin/menu ]; then
   fi
 fi
 
-if [ "$REMOTE" = 0 ]; then
+if [ "$WITH_BOT" = 1 ]; then
   node --check "$SRC_DIR/v4-main/bot-js/app.js"
 fi
 python3 -m py_compile "$SRC_DIR/v4-main/Api/vpn-api.py"
@@ -376,8 +407,35 @@ if [ -d "$BOT_DIR" ]; then
   STEP4_BAK="$bak"
 fi
 
+# .env bot ditulis dengan printf per baris (bukan heredoc tanpa quote),
+# agar nilai berisi $(), backtick, atau karakter khusus tidak dieksekusi (K-08).
+write_bot_env() {
+  {
+    printf '%s=%s\n' "BOT_TOKEN" "$BOT_TOKEN"
+    printf '%s=%s\n' "ADMIN_ID" "$ADMIN_ID"
+    printf '%s=%s\n' "VPN_API_BASE" "$VPN_API_BASE"
+    printf '%s=%s\n' "VPN_API_AUTH" "$VPN_API_AUTH"
+    printf '%s=%s\n' "H2H_URL" "${H2H_URL:-https://payment-gateway.outletku.ai.id/api/h2h/v1}"
+    printf '%s=%s\n' "H2H_KEY" "${H2H_KEY:-}"
+    printf '%s=%s\n' "GH_IP_TOKEN" "${GH_IP_TOKEN:-}"
+    printf '%s=%s\n' "GH_IP_OWNER" "${GH_IP_OWNER:-}"
+    printf '%s=%s\n' "GH_IP_REPO" "${GH_IP_REPO:-}"
+    printf '%s=%s\n' "GH_IP_FILE" "${GH_IP_FILE:-}"
+    printf '%s=%s\n' "SIDOMPUL_API_KEY" "${SIDOMPUL_API_KEY:-}"
+    printf '%s=%s\n' "HC_API_KEY" "${HC_API_KEY:-}"
+    printf '%s=%s\n' "CF_DOMAIN" "${CF_DOMAIN:-}"
+    printf '%s=%s\n' "CF_VMESS_UUID" "${CF_VMESS_UUID:-}"
+    printf '%s=%s\n' "CF_VLESS_UUID" "${CF_VLESS_UUID:-}"
+    printf '%s=%s\n' "CF_TROJAN_PASSWORD" "${CF_TROJAN_PASSWORD:-}"
+    printf '%s=%s\n' "DIGI_USER" "${DIGI_USER:-}"
+    printf '%s=%s\n' "DIGI_KEY" "${DIGI_KEY:-}"
+  } > "$BOT_DIR/.env"
+  chmod 600 "$BOT_DIR/.env"
+}
+
 # ---------- 6. Salin bot + API & Konfigurasi .env ----------
-if [ "$REMOTE" = 1 ]; then
+if [ "$REMOTE" = 1 ] || [ "$WITH_BOT" = 0 ]; then
+  # Tanpa bot: hanya salin API. Bot lama yang sudah ada (bila ada) tidak dihapus di sini.
   cp "$SRC_DIR/v4-main/Api/vpn-api.py" "$API_FILE"
   EFFECTIVE_DOMAIN="$VPN_DOMAIN"
 else
@@ -402,50 +460,10 @@ else
       rm -f "$OLD_ENV_TMP"
     else
       rm -f "$OLD_ENV_TMP"
-      cat << EOF > "$BOT_DIR/.env"
-BOT_TOKEN=$BOT_TOKEN
-ADMIN_ID=$ADMIN_ID
-VPN_API_BASE=$VPN_API_BASE
-VPN_API_AUTH=$VPN_API_AUTH
-H2H_URL=${H2H_URL:-https://payment-gateway.outletku.ai.id/api/h2h/v1}
-H2H_KEY=${H2H_KEY:-}
-GH_IP_TOKEN=${GH_IP_TOKEN:-}
-GH_IP_OWNER=${GH_IP_OWNER:-}
-GH_IP_REPO=${GH_IP_REPO:-}
-GH_IP_FILE=${GH_IP_FILE:-}
-SIDOMPUL_API_KEY=${SIDOMPUL_API_KEY:-}
-HC_API_KEY=${HC_API_KEY:-}
-CF_DOMAIN=${CF_DOMAIN:-}
-CF_VMESS_UUID=${CF_VMESS_UUID:-}
-CF_VLESS_UUID=${CF_VLESS_UUID:-}
-CF_TROJAN_PASSWORD=${CF_TROJAN_PASSWORD:-}
-DIGI_USER=${DIGI_USER:-}
-DIGI_KEY=${DIGI_KEY:-}
-EOF
-      chmod 600 "$BOT_DIR/.env"
+      write_bot_env
     fi
   else
-    cat << EOF > "$BOT_DIR/.env"
-BOT_TOKEN=$BOT_TOKEN
-ADMIN_ID=$ADMIN_ID
-VPN_API_BASE=$VPN_API_BASE
-VPN_API_AUTH=$VPN_API_AUTH
-H2H_URL=${H2H_URL:-https://payment-gateway.outletku.ai.id/api/h2h/v1}
-H2H_KEY=${H2H_KEY:-}
-GH_IP_TOKEN=${GH_IP_TOKEN:-}
-GH_IP_OWNER=${GH_IP_OWNER:-}
-GH_IP_REPO=${GH_IP_REPO:-}
-GH_IP_FILE=${GH_IP_FILE:-}
-SIDOMPUL_API_KEY=${SIDOMPUL_API_KEY:-}
-HC_API_KEY=${HC_API_KEY:-}
-CF_DOMAIN=${CF_DOMAIN:-}
-CF_VMESS_UUID=${CF_VMESS_UUID:-}
-CF_VLESS_UUID=${CF_VLESS_UUID:-}
-CF_TROJAN_PASSWORD=${CF_TROJAN_PASSWORD:-}
-DIGI_USER=${DIGI_USER:-}
-DIGI_KEY=${DIGI_KEY:-}
-EOF
-    chmod 600 "$BOT_DIR/.env"
+    write_bot_env
   fi
 
   # Restore database bot lama jika ada backup dari step 4
@@ -550,6 +568,9 @@ if [ -d "$SRC_DIR/v4-main/Cdy" ]; then
     rm -rf /tmp/menu-extract
   fi
   [ -f "$SRC_DIR/v4-main/Cdy/cek-izin" ] && cp "$SRC_DIR/v4-main/Cdy/cek-izin" /usr/bin/cek-izin && chmod +x /usr/bin/cek-izin
+  # Installer bot mandiri (dipanggil dari menu). Disalin SETELAH menu.zip,
+  # agar /usr/bin/install-botjs berisi installer asli, bukan wrapper dari zip.
+  [ -f "$SRC_DIR/v4-main/install-bot.sh" ] && cp "$SRC_DIR/v4-main/install-bot.sh" /usr/bin/install-botjs && chmod +x /usr/bin/install-botjs
   [ -f "$SRC_DIR/v4-main/Cdy/speedtest" ] && cp "$SRC_DIR/v4-main/Cdy/speedtest" /usr/bin/speedtest && chmod +x /usr/bin/speedtest
 fi
 
@@ -563,8 +584,8 @@ if [ -d "$SRC_DIR/v4-main/Fls" ]; then
   done
 fi
 
-# ---------- 10. Start Bot via PM2 (jika bukan mode remote) ----------
-if [ "$REMOTE" = 0 ]; then
+# ---------- 10. Start Bot via PM2 (hanya bila --with-bot) ----------
+if [ "$WITH_BOT" = 1 ]; then
   cd "$BOT_DIR"
   if [ -f "package.json" ]; then
     npm install --production || npm install
@@ -577,8 +598,13 @@ fi
 
 echo ""
 echo "=== VERDICT: INSTALASI BERHASIL SELESAI ==="
-if [ "$REMOTE" = 0 ]; then
+if [ "$WITH_BOT" = 1 ]; then
   echo "Bot Telegram (PM2: darren-bot) dan VPN API (port 5890) aktif."
-else
+elif [ "$REMOTE" = 1 ]; then
   echo "Stack VPN Remote berhasil diinstal (tanpa bot Telegram)."
+else
+  echo "VPN API (port 5890), Xray, dan menu berhasil diinstal."
+  echo "Bot Telegram BELUM terinstal."
+  echo "Instal bot lewat menu: menu -> 9 (MENU BOTELE) -> m-bot -> Install Bot,"
+  echo "atau jalankan langsung: install-botjs"
 fi
