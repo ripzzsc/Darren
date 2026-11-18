@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# DARREN_INSTALLER_VERSION=fix-total-20261118-01
+# DARREN_INSTALLER_VERSION=fix-total-20261118-02
 # Installer v4-main (versi perbaikan, LENGKAP) untuk VPS baru.
 # Penanda versi yang bisa di-grep: DARREN_INSTALLER_VERSION di atas.
 # Xray dipin ke SATU rilis resmi: lihat XRAY_TAG_PIN di bawah (bukan latest mengambang).
@@ -26,7 +26,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-DARREN_INSTALLER_VERSION="fix-total-20261118-01"
+DARREN_INSTALLER_VERSION="fix-total-20261118-02"
 XRAY_TAG_PIN="v26.10.31"
 
 trap 'echo "=== VERDICT: INSTALL GAGAL (perintah gagal; perbaiki pesan error di atas lalu jalankan ulang) ===" >&2' ERR
@@ -188,13 +188,20 @@ echo ""
 
 # ---------- 1. Dependensi sistem ----------
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -y
+# Repo NodeSource sisa run sebelumnya (kunci hilang/rusak) bisa membuat
+# apt-get update gagal di awal; bila gagal, buang repo itu dan coba lagi
+# tanpa NodeSource (pasang_node_pm2 akan fallback ke Node.js Ubuntu).
+apt-get update -y || { rm -f /etc/apt/sources.list.d/nodesource.list; apt-get update -y; }
 apt-get install -y ca-certificates curl gnupg unzip git python3 sqlite3 openssl haproxy nginx iproute2 at socat vnstat
 
 # ---------- 2. Node.js >= 18 + PM2 ----------
 pasang_node_pm2() {
   local need_node=0
   local major=""
+  local nodesource_ok=0
+  # Hash command bash bisa basi bila uninstall/reinstall sebelumnya
+  # menghapus binary (node/npm) yang masih tersimpan di hash.
+  hash -r
   if ! command -v node >/dev/null 2>&1; then
     need_node=1
   else
@@ -205,14 +212,46 @@ pasang_node_pm2() {
     echo "Menginstal Node.js 20 dari repo apt resmi NodeSource..."
     mkdir -p /etc/apt/keyrings
     if [ ! -s /etc/apt/keyrings/nodesource.gpg ]; then
-      curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --batch --yes --dearmor -o /etc/apt/keyrings/nodesource.gpg || { echo "ERROR: gagal mengunduh kunci NodeSource." >&2; exit 1; }
+      curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --batch --yes --dearmor -o /etc/apt/keyrings/nodesource.gpg || {
+        echo "PERINGATAN: gagal mengunduh kunci NodeSource, fallback ke Node.js Ubuntu." >&2
+      }
     fi
-    NODE_MAJOR=20
-    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
-    apt-get update -y
-    apt-get install -y nodejs
+    if [ -s /etc/apt/keyrings/nodesource.gpg ]; then
+      NODE_MAJOR=20
+      echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
+      if apt-get update -y && apt-get install -y nodejs; then
+        # apt-get update TIDAK gagal bila repo hanya gagal di-fetch
+        # (hanya peringatan "Some index files failed"); pastikan Node 20
+        # (NodeSource) yang terpasang, bukan Node 18 Ubuntu.
+        _nv="$(node -v 2>/dev/null | sed 's/^v//; s/\..*//')"
+        if [ "${_nv:-0}" -ge 20 ]; then
+          nodesource_ok=1
+        fi
+      fi
+      if [ "$nodesource_ok" != "1" ]; then
+        echo "PERINGATAN: repo NodeSource gagal/tidak menyediakan Node 20, fallback ke Node.js Ubuntu." >&2
+        rm -f /etc/apt/sources.list.d/nodesource.list
+        apt-get update -y
+      fi
+    fi
+    if [ "$nodesource_ok" != "1" ]; then
+      echo "Menginstal Node.js + npm dari repo Ubuntu..."
+      apt-get install -y nodejs npm
+    fi
   fi
-  echo "Node: $(node -v)"
+  # Node Ubuntu (18) tidak menyertakan npm; pastikan npm ada sebelum pm2.
+  # (Terjadi bila run sebelumnya memasang nodejs Ubuntu tanpa npm.)
+  hash -r
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "npm belum ada, menginstal paket npm dari Ubuntu..."
+    apt-get update -y && apt-get install -y npm
+  fi
+  hash -r
+  if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+    echo "ERROR: node/npm tidak tersedia setelah semua percobaan." >&2
+    exit 1
+  fi
+  echo "Node: $(node -v) / npm: $(npm -v)"
   npm install -g pm2
 }
 pasang_node_pm2
@@ -524,6 +563,9 @@ if [[ ! "$install_xray" =~ ^[Nn]$ ]]; then
   unzip -qo "/tmp/$XRAY_ZIP" -d /tmp/xray-extract
   mv /tmp/xray-extract/xray /usr/local/bin/xray
   chmod +x /usr/local/bin/xray
+  # File data geo (dibutuhkan routing geosite/geoip di config.json).
+  [ -f /tmp/xray-extract/geoip.dat ] && mv /tmp/xray-extract/geoip.dat /usr/local/bin/geoip.dat
+  [ -f /tmp/xray-extract/geosite.dat ] && mv /tmp/xray-extract/geosite.dat /usr/local/bin/geosite.dat
   rm -rf /tmp/$XRAY_ZIP /tmp/xray-extract
 
   # Service systemd Xray
@@ -535,6 +577,7 @@ After=network.target nss-lookup.target
 
 [Service]
 User=root
+Environment=XRAY_LOCATION_ASSET=/usr/local/bin
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
@@ -552,6 +595,40 @@ EOF
     [ -f "$SRC_DIR/v4-main/Cfg/nginx.conf" ] && cp "$SRC_DIR/v4-main/Cfg/nginx.conf" /etc/nginx/nginx.conf
     mkdir -p /etc/nginx/conf.d
     [ -f "$SRC_DIR/v4-main/Cfg/xray.conf" ] && cp "$SRC_DIR/v4-main/Cfg/xray.conf" /etc/nginx/conf.d/xray.conf
+  fi
+
+  # F-02: geoip.dat bawaan rilis Xray hanya berisi 19 entri (tanpa
+  # US/CA/JP/IN/YT) sehingga routing template gagal divalidasi; ganti
+  # dengan geoip.dat lengkap dari Loyalsoldier (260 entri). Bila unduhan
+  # gagal, pakai yang bawaan dan validasi di bawah akan memberi peringatan.
+  if curl -fsSL --max-time 120 https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat -o /tmp/geoip.dat; then
+    mv /tmp/geoip.dat /usr/local/bin/geoip.dat
+    echo "geoip.dat lengkap (Loyalsoldier) terpasang."
+  else
+    echo "PERINGATAN: gagal mengunduh geoip.dat lengkap; memakai geoip.dat bawaan Xray (routing geoip:us/ca/jp/in/yt tidak akan valid)." >&2
+  fi
+
+  # F-02: hasilkan /etc/xray/config.json dari template repo bila belum ada.
+  # Template berisi marker (#vmess, #vless, ...) yang dipakai API/menu
+  # untuk menambah akun — markernya JANGAN dihapus. UUID seed diganti
+  # dengan UUID acak tiap instalasi (UUID template ada di repo publik).
+  # Config yang sudah ada (berisi akun) tidak pernah ditimpa.
+  if [ ! -f /etc/xray/config.json ]; then
+    if [ -f "$SRC_DIR/v4-main/Cfg/config.json" ]; then
+      _uuid_baru="$(cat /proc/sys/kernel/random/uuid)"
+      sed "s/1d1c1d94-6987-4658-a4dc-8821a30fe7e0/$_uuid_baru/g" "$SRC_DIR/v4-main/Cfg/config.json" > /etc/xray/config.json
+      echo "config Xray dibuat di /etc/xray/config.json (UUID seed baru)."
+    else
+      echo "PERINGATAN: template $SRC_DIR/v4-main/Cfg/config.json tidak ditemukan; /etc/xray/config.json tidak dibuat." >&2
+    fi
+  fi
+  # Validasi config sebelum service di-restart.
+  if [ -f /etc/xray/config.json ] && [ -x /usr/local/bin/xray ]; then
+    if /usr/local/bin/xray run -test -config /etc/xray/config.json >/dev/null 2>&1; then
+      echo "config Xray valid (xray -test OK)."
+    else
+      echo "PERINGATAN: /etc/xray/config.json tidak lolos xray -test; xray mungkin tidak bisa start." >&2
+    fi
   fi
 
   systemctl daemon-reload

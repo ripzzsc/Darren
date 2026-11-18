@@ -220,7 +220,13 @@ def change_xray(fn):
         with _restart_lock:
             pending = _restart_timer is not None
         if not pending:
-            shutil.copy(CFG, CFG + ".bak-api")
+            try:
+                shutil.copy(CFG, CFG + ".bak-api")
+            except OSError:
+                # CFG belum ada (instalasi lama sebelum F-02 diperbaiki):
+                # kembalikan error JSON, jangan biarkan handler mati
+                # tanpa balasan.
+                return err("config xray tidak ditemukan")
         try:
             res = fn()
         except Exception as e:
@@ -389,6 +395,8 @@ def renew(q):
             pass
         return ok()
     # Xray: update comment date lines for this user (expiry is menu-side only)
+    if not os.path.exists(CFG):
+        return err("config xray tidak ditemukan")
     with _config_lock:
         with open(CFG) as f:
             txt = f.read()
