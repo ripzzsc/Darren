@@ -60,9 +60,8 @@ function expiryDate(days) {
 // (8443, 8080, 2086, 8880, UDPSSH 1-65535, DNS 53, BadVPN 7300) sengaja
 // TIDAK ditampilkan: 8443 tidak mendengarkan di Aji02, 53/7300 hanya
 // localhost, dan servis 8080/2086/8880 tidak terverifikasi sebagai
-// Save-account disisipkan handler (attachSave) hanya bila file
-// benar-benar tertulis di /var/www/html (server lokal); server remote
-// tidak dibuatkan file supaya link :81 tidak 404.
+// Save-account berupa file publik sudah dihapus (P0): kredensial akun
+// hanya ada di pesan Telegram pribadi user, bukan file di /var/www/html.
 const FANCY_TOP = '╭━━━━━━━━━━━━━━━━━━━━━━╮';
 const FANCY_BOT = '╰━━━━━━━━━━━━━━━━━━━━━━╯';
 const FANCY_SEP = '━━━━━━━━━━━━━━━━━━━━━━';
@@ -200,19 +199,18 @@ function buildXrayLinks(proto, remark, secret, host, wsPath) {
 
 function stripHtml(x) { return String(x || '').replace(/<[^>]*>/g, ''); }
 function isLocalServer(srv) { return dispDomain(srv) === domain; }
+// P0: kredensial akun TIDAK LAGI ditulis ke /var/www/html (publik via :81).
+// Akun lengkap sudah ada di pesan Telegram pribadi user; tidak ada file publik.
 function writeSaveFile(proto, username, txt, hostDomain) {
-  if (!hostDomain) return null;
-  try {
-    fs.writeFileSync(`/var/www/html/${proto}-${username}.txt`, txt, { mode: 0o644 });
-    return `http://${hostDomain}:81/${proto}-${username}.txt`;
-  } catch { return null; }
+  return null;
 }
 function deleteSaveFile(proto, username) {
-  try { fs.unlinkSync(`/var/www/html/${proto}-${username}.txt`); } catch {}
+  // Dulu menghapus file publik di atas; sekarang tidak ada file yang dibuat.
+  return;
 }
-// Sisipkan SAVE ACCOUNT ke pesan (sebelum baris sukses). Hanya untuk
-// SSH/Xray di server lokal; server remote tidak dibuatkan file supaya
-// link tidak 404. Pesan gagal / protokol lain tidak diubah.
+// SAVE ACCOUNT berupa file publik sudah dihapus (lihat writeSaveFile).
+// Pesan akun dikirim apa adanya; server remote tidak diubah.
+// Pesan gagal / protokol lain tidak diubah.
 function attachSave(proto, username, message, srv) {
   if (!['ssh', 'vmess', 'vless', 'trojan', 'shadowsocks'].includes(proto)) return { message, saveUrl: null };
   if (!isLocalServer(srv)) return { message, saveUrl: null };

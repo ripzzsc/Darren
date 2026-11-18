@@ -131,24 +131,10 @@ function buildTxt(proto, username, uuid, password, host, expFormatted, links) {
   return t;
 }
 
-// Simpan file akun ke /var/www/html agar link SAVE ACCOUNT
-// https://<domain>:81/<proto>-<user>.txt bisa dibuka — persis seperti
-// sistem menu lama di VPS ini (nginx port 81 ssl, root /var/www/html).
-// Gagal menulis (mis. tes lokal, bukan VPS) = saveUrl null, pesan akun
-// tetap jalan tanpa link itu. PERINGATAN: file ini PUBLIK, siapa pun
-// yang tahu link-nya bisa membaca kredensial akun — sama seperti
-// contoh yang dikirim user. Jangan pakai link ini untuk akun yang
-// harus dirahasiakan penuh; kredensial utama tetap di pesan Telegram
-// pribadi user.
+// P0: file akun TIDAK LAGI disimpan ke /var/www/html (publik via :81).
+// Kredensial lengkap hanya ada di pesan Telegram pribadi user.
 function saveAccountFile(proto, username, txt) {
-  const fileName = `${proto}-${username}.txt`;
-  const filePath = `/var/www/html/${fileName}`;
-  try {
-    fs.writeFileSync(filePath, txt, { mode: 0o644 });
-    const host = config.vpn.domain;
-    if (!host) return null;
-    return `https://${host}:81/${fileName}`;
-  } catch { return null; }
+  return null;
 }
 
 function formatXrayMessage(proto, username, uuid, password, host, exp, expFormatted, links, saveUrl) {
@@ -217,7 +203,6 @@ async function deleteAccount(proto, username) {
   const g = gate(); if (g) return g;
   const data = await apiGet('/delete', { proto, user: username }).catch((e) => ({ status: 'error', message: e.message }));
   if (data?.status !== 'success') return { success: false, message: `❌ Gagal hapus: ${esc(data?.message || 'API error')}` };
-  try { fs.unlinkSync(`/var/www/html/${proto}-${username}.txt`); } catch {}
   return { success: true, message: `🗑️ Akun <b>${esc(username)}</b> (${proto}) dihapus.` };
 }
 module.exports = { validUser, expiryDate, esc, fmtExpiry, createAccount, createSSH, createXray, renewAccount, deleteAccount, apiGet, buildLinks, buildClash, buildV2ray, buildTxt, saveAccountFile, PROTO_INFO };

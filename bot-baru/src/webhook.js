@@ -15,7 +15,7 @@ const http = require('http');
 const crypto = require('crypto');
 
 function verifySignature(secret, raw, sig) {
-  if (!secret) return true; // tanpa secret, terima tapi catat (mode manual tanpa secret)
+  if (!secret) return false; // tanpa secret, tolak (fail-closed): event pembayaran tanpa verifikasi tidak boleh lolos. Ping tanpa signature tetap ditangani terpisah di bawah.
   if (!sig || !sig.startsWith('sha256=')) return false;
   const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(raw).digest('hex');
   try { return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(sig)); }

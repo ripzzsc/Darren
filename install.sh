@@ -492,6 +492,7 @@ Type=simple
 User=root
 WorkingDirectory=/root
 ExecStart=/usr/bin/python3 /root/vpn-api.py
+EnvironmentFile=/etc/vpn-api/auth.env
 Restart=always
 RestartSec=3
 
@@ -601,7 +602,8 @@ echo "=== VERDICT: INSTALASI BERHASIL SELESAI ==="
 if [ "$WITH_BOT" = 1 ]; then
   echo "Bot Telegram (PM2: darren-bot) dan VPN API (port 5890) aktif."
 elif [ "$REMOTE" = 1 ]; then
-  echo "Stack VPN Remote berhasil diinstal (tanpa bot Telegram)."
+  echo "=== Selesai ==="
+  echo "Server remote: ${VPN_DOMAIN:-${REMOTE_MAIN_IP:-}} berhasil diinstal (tanpa bot Telegram)."
 else
   echo "VPN API (port 5890), Xray, dan menu berhasil diinstal."
   echo "Bot Telegram BELUM terinstal."

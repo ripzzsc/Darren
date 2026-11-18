@@ -1,17 +1,18 @@
 #!/bin/bash
 # FIXED: remote overwrite is opt-in only.
 if [ "${ALLOW_REMOTE_UPDATE:-0}" != "1" ]; then echo "Update remote ditolak: set ALLOW_REMOTE_UPDATE=1 untuk melanjutkan." >&2; exit 1; fi
-# Menghapus file .profile lama
-  rm -rf /root/.profile
-
-  # Membuat file .profile baru menggunakan echo
-  echo 'if [ "/bin/bash" ]; then' >> /root/.profile
-  echo '  if [ -f ~/.bashrc ]; then' >> /root/.profile
-  echo '    . ~/.bashrc' >> /root/.profile  # Mengaktifkan .bashrc jika ada
-  echo '  fi' >> /root/.profile
-  echo 'fi' >> /root/.profile
-  echo 'mesg n || true' >> /root/.profile   # Menonaktifkan pesan 'mesg'
-  echo 'welcome' >> /root/.profile          # Menjalankan perintah 'welcome'
+# Tulis ulang .profile (timpa langsung, bukan hapus + append, supaya
+# update yang diulang tidak menduplikasi isi dan tidak menghapus file
+# yang mungkin sudah disesuaikan)
+cat > /root/.profile << 'EOF'
+if [ "/bin/bash" ]; then
+  if [ -f ~/.bashrc ]; then
+    . ~/.bashrc
+  fi
+fi
+mesg n || true
+welcome
+EOF
 
 # Fungsi untuk menambahkan pekerjaan cron ke /etc/cron.d/
     cron_file="/etc/cron.d/auto_update"
@@ -118,7 +119,6 @@ chmod +x menu/*
 #./enc menu/*
 #rm -rf menu/*~
 mv menu/* /usr/bin/
-chmod +x /usr/bin/*
 rm -rf enc menu menu.zip 
 # jarang update bash /usr/bin/install-bot.sh >/dev/null 2>&1
 echo "$versi_terbaru" > /usr/bin/menu_version  # Update versi lokal
