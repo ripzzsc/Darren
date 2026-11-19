@@ -107,7 +107,7 @@ async function installRemoteServer({ ip, domain }) {
     };
   }
   const dom = domain ? ` REMOTE_DOMAIN='${domain}'` : '';
-  const cmd = `curl -fsSL https://raw.githubusercontent.com/bungkangeddeng-cyber/Darren/main/install.sh -o /tmp/darren-install-remote.sh && chmod +x /tmp/darren-install-remote.sh && REMOTE_MAIN_IP='${mainIp}'${dom} /tmp/darren-install-remote.sh --remote`;
+  const cmd = `curl -fsSL https://raw.githubusercontent.com/ripzzsc/Darren/main/install.sh -o /tmp/darren-install-remote.sh && chmod +x /tmp/darren-install-remote.sh && REMOTE_MAIN_IP='${mainIp}'${dom} /tmp/darren-install-remote.sh --remote`;
   const r = await runSsh(ip, cmd, INSTALL_TIMEOUT_MS);
   const lines = String(r.output || '').split('\n');
   const tail = lines.slice(-40).join('\n');
@@ -162,7 +162,7 @@ async function uninstallRemoteServer(ip) {
       tail: '',
     };
   }
-  const cmd = `curl -fsSL https://raw.githubusercontent.com/bungkangeddeng-cyber/Darren/main/uninstall.sh -o /tmp/darren-uninstall-remote.sh && chmod +x /tmp/darren-uninstall-remote.sh && echo YA | bash /tmp/darren-uninstall-remote.sh`;
+  const cmd = `curl -fsSL https://raw.githubusercontent.com/ripzzsc/Darren/main/uninstall.sh -o /tmp/darren-uninstall-remote.sh && chmod +x /tmp/darren-uninstall-remote.sh && echo YA | bash /tmp/darren-uninstall-remote.sh`;
   const r = await runSsh(ip, cmd, UNINSTALL_TIMEOUT_MS);
   const lines = String(r.output || '').split('\n');
   const tail = lines.slice(-40).join('\n');

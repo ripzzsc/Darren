@@ -30,8 +30,14 @@ if [ "$(id -u)" != "0" ]; then
 fi
 
 # ---------- Node.js >= 18 + PM2 ----------
+# I-19: fallback sama seperti install.sh — kunci NodeSource gagal bukan
+# berarti install gagal: warning + fallback ke Node.js Ubuntu, dan npm
+# dipastikan ada (Node Ubuntu 18 tidak menyertakan npm).
 pasang_node_pm2() {
-  local need_node=0 major=""
+  local need_node=0 major="" nodesource_ok=0
+  # Hash command bash bisa basi bila uninstall/reinstall sebelumnya
+  # menghapus binary (node/npm) yang masih tersimpan di hash.
+  hash -r
   if ! command -v node >/dev/null 2>&1; then
     need_node=1
   else
@@ -45,13 +51,43 @@ pasang_node_pm2() {
     apt-get install -y ca-certificates curl gnupg
     mkdir -p /etc/apt/keyrings
     if [ ! -s /etc/apt/keyrings/nodesource.gpg ]; then
-      curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --batch --yes --dearmor -o /etc/apt/keyrings/nodesource.gpg || { echo "ERROR: gagal mengunduh kunci NodeSource." >&2; exit 1; }
+      curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --batch --yes --dearmor -o /etc/apt/keyrings/nodesource.gpg || {
+        echo "PERINGATAN: gagal mengunduh kunci NodeSource, fallback ke Node.js Ubuntu." >&2
+      }
     fi
-    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
-    apt-get update -y
-    apt-get install -y nodejs
+    if [ -s /etc/apt/keyrings/nodesource.gpg ]; then
+      echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
+      if apt-get update -y && apt-get install -y nodejs; then
+        # apt-get update TIDAK gagal bila repo hanya gagal di-fetch;
+        # pastikan Node 20 (NodeSource) yang terpasang, bukan Node 18 Ubuntu.
+        _nv="$(node -v 2>/dev/null | sed 's/^v//; s/\..*//')"
+        if [ "${_nv:-0}" -ge 20 ]; then
+          nodesource_ok=1
+        fi
+      fi
+      if [ "$nodesource_ok" != "1" ]; then
+        echo "PERINGATAN: repo NodeSource gagal/tidak menyediakan Node 20, fallback ke Node.js Ubuntu." >&2
+        rm -f /etc/apt/sources.list.d/nodesource.list
+        apt-get update -y
+      fi
+    fi
+    if [ "$nodesource_ok" != "1" ]; then
+      echo "Menginstal Node.js + npm dari repo Ubuntu..."
+      apt-get install -y nodejs npm
+    fi
   fi
-  echo "Node: $(node -v)"
+  # Node Ubuntu (18) tidak menyertakan npm; pastikan npm ada sebelum pm2.
+  hash -r
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "npm belum ada, menginstal paket npm dari Ubuntu..."
+    apt-get update -y && apt-get install -y npm
+  fi
+  hash -r
+  if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+    echo "ERROR: node/npm tidak tersedia setelah semua percobaan." >&2
+    exit 1
+  fi
+  echo "Node: $(node -v) / npm: $(npm -v)"
   npm install -g pm2
 }
 pasang_node_pm2
@@ -73,26 +109,6 @@ else
 fi
 node --check "$SRC_BOT/app.js"
 
-# ---------- VPN_API_AUTH: pakai yang sudah ada, jangan generate baru ----------
-if [ -f /etc/vpn-api/auth.env ]; then
-  VPN_API_AUTH="$(grep '^VPN_API_AUTH=' /etc/vpn-api/auth.env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '[:space:]')"
-fi
-if [ -z "$VPN_API_AUTH" ]; then
-  echo "auth.env VPN API belum ada — membuat auth baru."
-  VPN_API_AUTH="$(openssl rand -hex 24)" || { echo "ERROR: gagal mengacak VPN_API_AUTH." >&2; exit 1; }
-  mkdir -p /etc/vpn-api
-  printf '%s=%s\n' "VPN_API_AUTH" "$VPN_API_AUTH" > /etc/vpn-api/auth.env
-  chmod 600 /etc/vpn-api/auth.env
-  if systemctl list-unit-files vpn-api.service >/dev/null 2>&1; then
-    systemctl daemon-reload 2>/dev/null || true
-    systemctl restart vpn-api.service 2>/dev/null || echo "Peringatan: vpn-api.service tidak bisa di-restart — periksa manual dengan: systemctl status vpn-api.service"
-  else
-    echo "Peringatan: VPN API belum terinstal di VPS ini — bot tidak bisa membuat akun sampai VPN API terinstal (jalankan install.sh dulu)."
-  fi
-else
-  echo "Memakai VPN_API_AUTH yang sudah ada di /etc/vpn-api/auth.env."
-fi
-
 # ---------- Prompt konfigurasi bot ----------
 # Nilai .env lama (bila ada) dipakai sebagai default untuk field opsional.
 OLD_ENV=""
@@ -104,15 +120,37 @@ old_val() {
 
 echo ""
 echo "Isi konfigurasi bot. Kosongkan yang opsional bila belum ada."
+# I-09: loop prompt wajib berhenti bila stdin EOF (Ctrl-D / pipe kosong /
+# non-interaktif) — read yang gagal karena EOF langsung batal, bukan
+# mengulang selamanya. Batas 3 percobaan untuk input yang salah.
+_bot_attempts=0
 while true; do
-  read -r -s -p "BOT_TOKEN Telegram (dari BotFather): " BOT_TOKEN || true
+  _bot_attempts=$((_bot_attempts + 1))
+  if [ "$_bot_attempts" -gt 3 ]; then
+    echo "ERROR: BOT_TOKEN gagal diisi 3x — dibatalkan." >&2
+    exit 1
+  fi
+  if ! read -r -s -p "BOT_TOKEN Telegram (dari BotFather): " BOT_TOKEN; then
+    echo ""
+    echo "ERROR: input dibatalkan (stdin EOF) — BOT_TOKEN wajib diisi." >&2
+    exit 1
+  fi
   echo ""
   [ -n "$BOT_TOKEN" ] || { echo "BOT_TOKEN wajib diisi."; continue; }
   if [[ "$BOT_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]; then break; fi
   echo "Format BOT_TOKEN salah (angka:token)."
 done
+_admin_attempts=0
 while true; do
-  read -r -p "ADMIN_ID Telegram (angka saja): " ADMIN_ID || true
+  _admin_attempts=$((_admin_attempts + 1))
+  if [ "$_admin_attempts" -gt 3 ]; then
+    echo "ERROR: ADMIN_ID gagal diisi 3x — dibatalkan." >&2
+    exit 1
+  fi
+  if ! read -r -p "ADMIN_ID Telegram (angka saja): " ADMIN_ID; then
+    echo "ERROR: input dibatalkan (stdin EOF) — ADMIN_ID wajib diisi." >&2
+    exit 1
+  fi
   [[ "$ADMIN_ID" =~ ^[0-9]+$ ]] && break
   echo "ADMIN_ID harus angka."
 done
@@ -177,6 +215,29 @@ if [ -d "$BOT_DIR" ]; then
 fi
 cp -a "$SRC_BOT" "$BOT_DIR"
 
+# I-16: VPN_API_AUTH dirotasi TERAKHIR, sesaat sebelum .env ditulis —
+# bukan di awal. Bila user batal (Ctrl-C/EOF) saat prompt di atas, auth
+# API tidak berubah dan bot lama tetap jalan.
+# ---------- VPN_API_AUTH: pakai yang sudah ada, jangan generate baru ----------
+if [ -f /etc/vpn-api/auth.env ]; then
+  VPN_API_AUTH="$(grep '^VPN_API_AUTH=' /etc/vpn-api/auth.env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '[:space:]')"
+fi
+if [ -z "$VPN_API_AUTH" ]; then
+  echo "auth.env VPN API belum ada — membuat auth baru."
+  VPN_API_AUTH="$(openssl rand -hex 24)" || { echo "ERROR: gagal mengacak VPN_API_AUTH." >&2; exit 1; }
+  mkdir -p /etc/vpn-api
+  printf '%s=%s\n' "VPN_API_AUTH" "$VPN_API_AUTH" > /etc/vpn-api/auth.env
+  chmod 600 /etc/vpn-api/auth.env
+  if systemctl list-unit-files vpn-api.service >/dev/null 2>&1; then
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl restart vpn-api.service 2>/dev/null || echo "Peringatan: vpn-api.service tidak bisa di-restart — periksa manual dengan: systemctl status vpn-api.service"
+  else
+    echo "Peringatan: VPN API belum terinstal di VPS ini — bot tidak bisa membuat akun sampai VPN API terinstal (jalankan install.sh dulu)."
+  fi
+else
+  echo "Memakai VPN_API_AUTH yang sudah ada di /etc/vpn-api/auth.env."
+fi
+
 # Tulis .env dengan printf (aman dari injeksi $()/backtick — lihat header).
 write_bot_env() {
   {
@@ -230,6 +291,24 @@ if [ -f "package.json" ]; then
 fi
 pm2 delete darren-bot 2>/dev/null || true
 pm2 start app.js --name "darren-bot"
+# I-10: verifikasi bot benar-benar online — PM2 jalan, token valid (getMe),
+# dan VPN API merespons. Gagal di salah satu = gagal, bukan "BERHASIL".
+sleep 5
+_BOT_PID="$(pm2 pid darren-bot 2>/dev/null || true)"
+if [ -z "$_BOT_PID" ]; then
+  echo "ERROR: bot tidak jalan (PM2: darren-bot tidak punya PID)." >&2
+  pm2 show darren-bot || true
+  exit 1
+fi
+if ! curl -fsSL --max-time 15 "https://api.telegram.org/bot${BOT_TOKEN}/getMe" | grep -q '"ok":true'; then
+  echo "ERROR: BOT_TOKEN ditolak Telegram (getMe gagal) — periksa tokennya." >&2
+  exit 1
+fi
+if ! curl -fsSL --max-time 10 http://127.0.0.1:5890/health | grep -q success; then
+  echo "ERROR: VPN API :5890 tidak merespons (health gagal)." >&2
+  exit 1
+fi
+echo "Verifikasi bot OK: PM2 online (PID $_BOT_PID), token Telegram valid, VPN API :5890 sehat."
 pm2 save
 pm2 startup systemd -u root --hp /root 2>/dev/null || true
 

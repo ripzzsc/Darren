@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# DARREN_INSTALLER_VERSION=fix-total-20261118-02
+# DARREN_INSTALLER_VERSION=fix-total-20261119-03
 # Installer v4-main (versi perbaikan, LENGKAP) untuk VPS baru.
 # Penanda versi yang bisa di-grep: DARREN_INSTALLER_VERSION di atas.
 # Xray dipin ke SATU rilis resmi: lihat XRAY_TAG_PIN di bawah (bukan latest mengambang).
@@ -24,9 +24,13 @@
 #                        # (non-interaktif; domain lewat env REMOTE_DOMAIN)
 # Repo Darren saat ini PUBLIK, jadi unduhan di atas tidak butuh token.
 set -euo pipefail
+# F-B1: errtrace — tanpa ini trap ERR tidak diwariskan ke dalam fungsi,
+# sehingga kegagalan di dalam fungsi (mis. npm install di pasang_node_pm2)
+# mematikan installer tanpa mencetak VERDICT GAGAL.
+set -E
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-DARREN_INSTALLER_VERSION="fix-total-20261118-02"
+DARREN_INSTALLER_VERSION="fix-total-20261119-03"
 XRAY_TAG_PIN="v26.10.31"
 
 trap 'echo "=== VERDICT: INSTALL GAGAL (perintah gagal; perbaiki pesan error di atas lalu jalankan ulang) ===" >&2' ERR
@@ -126,6 +130,18 @@ git_remote_head() {
   fi
 }
 
+# I-20: validasi format domain minimal — mengandung titik, bukan IPv4,
+# hanya huruf/angka/titik/strip. Dipakai sebelum domain disimpan dan
+# sebelum sertifikat diterbitkan.
+domain_valid() {
+  local d="$1"
+  [ -n "$d" ] || return 1
+  [[ "$d" == *.* ]] || return 1
+  [[ "$d" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && return 1
+  [[ "$d" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || return 1
+  return 0
+}
+
 hapus_instalasi_lama() {
   command -v unzip >/dev/null 2>&1 || apt-get install -y unzip 2>/dev/null || true
   if [ ! -f "$SRC_DIR/uninstall.sh" ]; then
@@ -192,7 +208,7 @@ export DEBIAN_FRONTEND=noninteractive
 # apt-get update gagal di awal; bila gagal, buang repo itu dan coba lagi
 # tanpa NodeSource (pasang_node_pm2 akan fallback ke Node.js Ubuntu).
 apt-get update -y || { rm -f /etc/apt/sources.list.d/nodesource.list; apt-get update -y; }
-apt-get install -y ca-certificates curl gnupg unzip git python3 sqlite3 openssl haproxy nginx iproute2 at socat vnstat
+apt-get install -y ca-certificates curl gnupg unzip git python3 sqlite3 openssl haproxy nginx iproute2 at socat vnstat dnsutils
 
 # ---------- 2. Node.js >= 18 + PM2 ----------
 pasang_node_pm2() {
@@ -252,7 +268,15 @@ pasang_node_pm2() {
     exit 1
   fi
   echo "Node: $(node -v) / npm: $(npm -v)"
-  npm install -g pm2
+  # F-B2: npm install bisa gagal sesaat bila jaringan tersendat; coba sampai 3x.
+  _pm2_ok=0
+  for _i in 1 2 3; do
+    if npm install -g pm2; then _pm2_ok=1; break; fi
+    echo "PERINGATAN: npm install -g pm2 gagal (percobaan $_i/3), mencoba lagi..." >&2
+    sleep 5
+  done
+  # Bila semua percobaan gagal, test ini gagal -> trap ERR mencetak VERDICT GAGAL.
+  test "$_pm2_ok" = "1"
 }
 pasang_node_pm2
 
@@ -346,15 +370,37 @@ elif [ "$WITH_BOT" = 1 ]; then
   echo "Isi konfigurasi berikut. Kosongkan yang opsional bila belum ada."
   echo "Mode --with-bot: bot Telegram langsung terinstal saat install awal."
   read -r -p "Domain VPS kamu (contoh: vpn.contoh.com, kosong = localhost saja): " VPN_DOMAIN || true
+  # I-09: loop prompt wajib berhenti bila stdin EOF (Ctrl-D / pipe
+  # kosong / non-interaktif) — read yang gagal karena EOF langsung batal,
+  # bukan mengulang selamanya. Batas 3 percobaan untuk input yang salah.
+  _bot_attempts=0
   while true; do
-    read -r -s -p "BOT_TOKEN Telegram (dari BotFather): " BOT_TOKEN || true
+    _bot_attempts=$((_bot_attempts + 1))
+    if [ "$_bot_attempts" -gt 3 ]; then
+      echo "ERROR: BOT_TOKEN gagal diisi 3x — dibatalkan." >&2
+      exit 1
+    fi
+    if ! read -r -s -p "BOT_TOKEN Telegram (dari BotFather): " BOT_TOKEN; then
+      echo ""
+      echo "ERROR: input dibatalkan (stdin EOF) — BOT_TOKEN wajib diisi." >&2
+      exit 1
+    fi
     echo ""
     [ -n "$BOT_TOKEN" ] || { echo "BOT_TOKEN wajib diisi."; continue; }
     if [[ "$BOT_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]; then break; fi
     echo "Format BOT_TOKEN salah (angka:token)."
   done
+  _admin_attempts=0
   while true; do
-    read -r -p "ADMIN_ID Telegram (angka saja): " ADMIN_ID || true
+    _admin_attempts=$((_admin_attempts + 1))
+    if [ "$_admin_attempts" -gt 3 ]; then
+      echo "ERROR: ADMIN_ID gagal diisi 3x — dibatalkan." >&2
+      exit 1
+    fi
+    if ! read -r -p "ADMIN_ID Telegram (angka saja): " ADMIN_ID; then
+      echo "ERROR: input dibatalkan (stdin EOF) — ADMIN_ID wajib diisi." >&2
+      exit 1
+    fi
     [[ "$ADMIN_ID" =~ ^[0-9]+$ ]] && break
     echo "ADMIN_ID harus angka."
   done
@@ -516,8 +562,17 @@ fi
 
 # ---------- 7. Setup VPN API Service ----------
 mkdir -p /etc/vpn-api
+# I-08: mode --remote mengikat API ke 0.0.0.0 supaya bot utama bisa
+# memanggil :5890 lewat IP publik (UFW di bawah tetap membatasi ke
+# REMOTE_MAIN_IP); mode biasa tetap localhost saja.
+if [ "$REMOTE" = 1 ]; then
+  _api_host="0.0.0.0"
+else
+  _api_host="127.0.0.1"
+fi
 cat << EOF > /etc/vpn-api/auth.env
 VPN_API_AUTH=$VPN_API_AUTH
+VPN_API_HOST=$_api_host
 EOF
 chmod 600 /etc/vpn-api/auth.env
 
@@ -552,9 +607,28 @@ if command -v ufw >/dev/null 2>&1 && ufw status | grep -qw active; then
 fi
 
 # ---------- 8. Setup Xray & Stack TLS (HAProxy + Nginx) ----------
+# I-01: TLS_OK/TLS_PENDING/XRAY_INSTALLED dipakai gate akhir (verdict jujur).
+TLS_OK=0
+TLS_PENDING=0
+XRAY_INSTALLED=0
 if [[ ! "$install_xray" =~ ^[Nn]$ ]]; then
+  XRAY_INSTALLED=1
   echo "Menginstal Xray-core versi pin: $XRAY_TAG_PIN ..."
   mkdir -p /etc/xray /var/log/xray
+
+  # I-20: simpan domain yang diketik saat install (bila diisi dan formatnya
+  # valid) supaya fixcert/change-domain dan script lain bisa membacanya.
+  if [ -n "${VPN_DOMAIN:-}" ]; then
+    if domain_valid "$VPN_DOMAIN"; then
+      echo "$VPN_DOMAIN" > /etc/xray/domain
+      echo "$VPN_DOMAIN" > /root/domain
+      mkdir -p /var/lib/kyt
+      echo "IP=$VPN_DOMAIN" > /var/lib/kyt/ipvps.conf
+      echo "Domain disimpan: $VPN_DOMAIN"
+    else
+      echo "PERINGATAN: domain '$VPN_DOMAIN' formatnya tidak valid — tidak disimpan, sertifikat tidak diterbitkan." >&2
+    fi
+  fi
   
   # Unduh rilis resmi Xray
   XRAY_ZIP="Xray-linux-64.zip"
@@ -597,6 +671,98 @@ EOF
     [ -f "$SRC_DIR/v4-main/Cfg/xray.conf" ] && cp "$SRC_DIR/v4-main/Cfg/xray.conf" /etc/nginx/conf.d/xray.conf
   fi
 
+  # I-02/I-03: sertifikat Let's Encrypt via acme.sh RESMI (get.acme.sh),
+  # atau fallback "TLS pending" (K16) bila domain/DNS belum siap — nginx
+  # :81 jadi HTTP polos supaya nginx -t lolos dan nginx tetap jalan.
+  mkdir -p /var/www/html
+  if [ -f /etc/xray/xray.crt ] && [ -f /etc/xray/xray.key ] && [ -f /etc/haproxy/hap.pem ]; then
+    echo "Sertifikat lama ditemukan — dipakai, tidak diterbitkan ulang."
+    TLS_OK=1
+  elif [ -n "${VPN_DOMAIN:-}" ] && domain_valid "$VPN_DOMAIN"; then
+    _vps_ip="$(curl -fsSL --max-time 10 https://ifconfig.me 2>/dev/null | tr -d '[:space:]' || true)"
+    _domain_ip="$(nslookup "$VPN_DOMAIN" 8.8.8.8 2>/dev/null | awk '/^Address: / {print $2}' | tail -n1)"
+    [ -z "$_domain_ip" ] && _domain_ip="$(getent hosts "$VPN_DOMAIN" 2>/dev/null | awk '{print $1}' | head -n1)"
+    if [ -n "$_vps_ip" ] && [ "$_domain_ip" = "$_vps_ip" ]; then
+      echo "Domain $VPN_DOMAIN mengarah ke VPS ini — menerbitkan sertifikat Let's Encrypt..."
+      if [ ! -x /root/.acme.sh/acme.sh ]; then
+        echo "Memasang acme.sh resmi..."
+        if curl -fsSL --max-time 60 https://get.acme.sh -o /tmp/get.acme.sh && sh /tmp/get.acme.sh >/dev/null 2>&1; then
+          echo "acme.sh terpasang."
+        else
+          echo "PERINGATAN: gagal memasang acme.sh resmi — lanjut mode TLS pending." >&2
+        fi
+        rm -f /tmp/get.acme.sh
+      fi
+      if [ -x /root/.acme.sh/acme.sh ]; then
+        # Port 80 harus bebas untuk tantangan HTTP-01.
+        systemctl stop nginx haproxy 2>/dev/null || true
+        /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt >/dev/null 2>&1 || true
+        if /root/.acme.sh/acme.sh --issue --standalone -d "$VPN_DOMAIN" --keylength ec-256; then
+          if /root/.acme.sh/acme.sh --installcert -d "$VPN_DOMAIN" --fullchainpath /etc/xray/xray.crt --keypath /etc/xray/xray.key --ecc \
+             && [ -f "/root/.acme.sh/${VPN_DOMAIN}_ecc/fullchain.cer" ] && [ -f "/root/.acme.sh/${VPN_DOMAIN}_ecc/${VPN_DOMAIN}.key" ]; then
+            cat "/root/.acme.sh/${VPN_DOMAIN}_ecc/fullchain.cer" "/root/.acme.sh/${VPN_DOMAIN}_ecc/${VPN_DOMAIN}.key" > /etc/haproxy/hap.pem
+            chmod 600 /etc/xray/xray.key /etc/haproxy/hap.pem
+            echo "Sertifikat Let's Encrypt untuk $VPN_DOMAIN terbit."
+            TLS_OK=1
+          else
+            echo "PERINGATAN: gagal memasang sertifikat ke /etc/xray — lanjut mode TLS pending." >&2
+          fi
+        else
+          echo "PERINGATAN: acme.sh gagal menerbitkan sertifikat untuk $VPN_DOMAIN — lanjut mode TLS pending." >&2
+        fi
+      fi
+    else
+      echo "PERINGATAN: domain $VPN_DOMAIN belum mengarah ke IP VPS ini (${_vps_ip:-tidak diketahui}) — sertifikat tidak diterbitkan, lanjut mode TLS pending." >&2
+    fi
+  else
+    echo "Tidak ada domain yang valid — sertifikat tidak diterbitkan, lanjut mode TLS pending."
+  fi
+  if [ "$TLS_OK" != "1" ]; then
+    TLS_PENDING=1
+    # K16: :81 jadi HTTP polos (hapus baris ssl) supaya nginx -t lolos.
+    if [ -f /etc/nginx/conf.d/xray.conf ]; then
+      sed -i 's/^\(\s*\)listen 81 ssl http2 reuseport;/\1listen 81;/; /^\s*ssl_certificate/d; /^\s*ssl_ciphers/d; /^\s*ssl_protocols/d' /etc/nginx/conf.d/xray.conf
+    fi
+    echo "Status TLS: PENDING — nginx :81 jalan HTTP polos; terbitkan sertifikat lewat menu (change-domain / fix-add-ssl) agar VPN domain jalan."
+  fi
+
+  # I-04: pasang stack SSH-WS — tls-router :10019, ws-shield :10017,
+  # ws-bridge :10018, biner ws + tun.conf. haproxy :443 meneruskan ke
+  # tls-router, jadi tanpa stack ini jalur WS :443 mati walau sertifikat ada.
+  if [ -d "$SRC_DIR/v4-main/Cfg" ] && [ -d "$SRC_DIR/v4-main/Fls" ]; then
+    for _py in tls-router ws-shield ws-bridge; do
+      if [ -f "$SRC_DIR/v4-main/Cfg/$_py.py" ]; then
+        cp "$SRC_DIR/v4-main/Cfg/$_py.py" "/usr/local/bin/$_py.py"
+        chmod +x "/usr/local/bin/$_py.py"
+      else
+        echo "PERINGATAN: $SRC_DIR/v4-main/Cfg/$_py.py tidak ada — stack WS tidak lengkap." >&2
+      fi
+      if [ -f "$SRC_DIR/v4-main/Cfg/$_py.service" ]; then
+        cp "$SRC_DIR/v4-main/Cfg/$_py.service" "/etc/systemd/system/$_py.service"
+      else
+        echo "PERINGATAN: unit $_py.service tidak ada di repo." >&2
+      fi
+    done
+    if [ -f "$SRC_DIR/v4-main/Fls/ws" ]; then
+      cp "$SRC_DIR/v4-main/Fls/ws" /usr/bin/ws
+      chmod +x /usr/bin/ws
+    else
+      echo "PERINGATAN: biner ws (Fls/ws) tidak ada — stack WS tidak lengkap." >&2
+    fi
+    if [ -f "$SRC_DIR/v4-main/Cfg/tun.conf" ]; then
+      cp "$SRC_DIR/v4-main/Cfg/tun.conf" /usr/bin/tun.conf
+    else
+      echo "PERINGATAN: tun.conf tidak ada di repo." >&2
+    fi
+    if [ -f "$SRC_DIR/v4-main/Fls/ws.service" ]; then
+      cp "$SRC_DIR/v4-main/Fls/ws.service" /etc/systemd/system/ws.service
+    else
+      echo "PERINGATAN: unit ws.service tidak ada di repo." >&2
+    fi
+  else
+    echo "PERINGATAN: folder Cfg/Fls tidak ada — stack WS tidak dipasang." >&2
+  fi
+
   # F-02: geoip.dat bawaan rilis Xray hanya berisi 19 entri (tanpa
   # US/CA/JP/IN/YT) sehingga routing template gagal divalidasi; ganti
   # dengan geoip.dat lengkap dari Loyalsoldier (260 entri). Bila unduhan
@@ -633,7 +799,21 @@ EOF
 
   systemctl daemon-reload
   systemctl enable xray.service haproxy nginx
-  systemctl restart haproxy nginx xray.service || true
+  # I-01: restart wajib jalan — kegagalan di sini menggagalkan install
+  # (trap ERR mencetak VERDICT GAGAL), bukan ditelan "|| true".
+  # haproxy hanya di-restart bila sertifikat ada; bila TLS pending,
+  # haproxy sengaja tidak jalan (tidak ada hap.pem).
+  systemctl restart xray.service
+  systemctl restart nginx
+  if [ "$TLS_OK" = "1" ]; then
+    systemctl restart haproxy
+  fi
+  # I-04: nyalakan stack SSH-WS (urutan: shield dulu, bridge Requires shield).
+  systemctl enable ws-shield.service ws-bridge.service tls-router.service ws.service 2>/dev/null || true
+  systemctl restart ws-shield.service 2>/dev/null || echo "PERINGATAN: ws-shield gagal start — jalur SSH-WS :443 belum jalan." >&2
+  systemctl restart ws-bridge.service 2>/dev/null || echo "PERINGATAN: ws-bridge gagal start — jalur SSH-WS :443 belum jalan." >&2
+  systemctl restart ws.service 2>/dev/null || echo "PERINGATAN: ws gagal start." >&2
+  systemctl restart tls-router.service 2>/dev/null || echo "PERINGATAN: tls-router gagal start — jalur WS :443 belum jalan." >&2
 fi
 
 # ---------- 9. Setup Menu Utama & Limit Script ----------
@@ -652,13 +832,31 @@ if [ -d "$SRC_DIR/v4-main/Cdy" ]; then
   [ -f "$SRC_DIR/v4-main/Cdy/speedtest" ] && cp "$SRC_DIR/v4-main/Cdy/speedtest" /usr/bin/speedtest && chmod +x /usr/bin/speedtest
 fi
 
-# Limit services dari Fls
+# Limit kuota/IP Xray (I-11): script limit ada di Fls/ dengan nama
+# vmess/vless/trojan/shadowsocks; unit systemd menjalankan
+# /etc/xray/limit.<proto>. Loop lama menyalin nama file yang tidak ada
+# (limitvmess dst.) sehingga diam-diam tidak ada yang terpasang.
+# (limit-ip sengaja tidak dipasang: menu limit-on-off sendiri menyatakan
+# fitur LIMIT IP belum tersedia di paket ini.)
 if [ -d "$SRC_DIR/v4-main/Fls" ]; then
-  for limit_script in limitvmess limitvless limittrojan limitshadowsocks; do
-    if [ -f "$SRC_DIR/v4-main/Fls/$limit_script" ]; then
-      cp "$SRC_DIR/v4-main/Fls/$limit_script" "/usr/bin/$limit_script"
-      chmod +x "/usr/bin/$limit_script"
+  mkdir -p /etc/xray
+  for _proto in vmess vless trojan shadowsocks; do
+    if [ -f "$SRC_DIR/v4-main/Fls/$_proto" ]; then
+      cp "$SRC_DIR/v4-main/Fls/$_proto" "/etc/xray/limit.$_proto"
+      chmod +x "/etc/xray/limit.$_proto"
+    else
+      echo "PERINGATAN: script limit $_proto tidak ada di Fls/." >&2
     fi
+    if [ -f "$SRC_DIR/v4-main/Fls/limit$_proto.service" ]; then
+      cp "$SRC_DIR/v4-main/Fls/limit$_proto.service" "/etc/systemd/system/limit$_proto.service"
+    else
+      echo "PERINGATAN: unit limit$_proto.service tidak ada di Fls/." >&2
+    fi
+  done
+  systemctl daemon-reload
+  systemctl enable limitvmess.service limitvless.service limittrojan.service limitshadowsocks.service 2>/dev/null || true
+  for _unit in limitvmess limitvless limittrojan limitshadowsocks; do
+    systemctl restart "$_unit.service" 2>/dev/null || echo "PERINGATAN: $_unit gagal start." >&2
   done
 fi
 
@@ -675,7 +873,61 @@ if [ "$WITH_BOT" = 1 ]; then
 fi
 
 echo ""
-echo "=== VERDICT: INSTALASI BERHASIL SELESAI ==="
+# I-01: gate akhir yang jujur — cek service benar-benar aktif, bukan
+# sekadar "restart tidak error". Dua verdict terpisah seperti janji README:
+# "Xray aktif" vs "VPN domain jalan".
+CORE_OK=1
+CORE_FAIL=""
+if [ "$XRAY_INSTALLED" = "1" ]; then
+  if ! systemctl is-active --quiet xray.service; then CORE_OK=0; CORE_FAIL="$CORE_FAIL xray"; fi
+  if ! nginx -t >/dev/null 2>&1; then CORE_OK=0; CORE_FAIL="$CORE_FAIL nginx-config"; fi
+  if ! systemctl is-active --quiet nginx; then CORE_OK=0; CORE_FAIL="$CORE_FAIL nginx"; fi
+else
+  echo "Xray dilewati sesuai pilihan saat prompt (stack TLS tidak dikonfigurasi)."
+fi
+if ! systemctl is-active --quiet vpn-api.service; then CORE_OK=0; CORE_FAIL="$CORE_FAIL vpn-api"; fi
+
+DOMAIN_OK=1
+DOMAIN_FAIL=""
+if [ "$XRAY_INSTALLED" = "1" ]; then
+  if [ "$TLS_OK" != "1" ]; then
+    DOMAIN_OK=0; DOMAIN_FAIL="$DOMAIN_FAIL tls-pending"
+  else
+    # haproxy hanya bisa jalan bila sertifikat ada; cek konfig + statusnya
+    # hanya dalam kondisi itu (bila TLS pending, haproxy mati itu wajar).
+    if ! haproxy -c -f /etc/haproxy/haproxy.cfg >/dev/null 2>&1; then DOMAIN_OK=0; DOMAIN_FAIL="$DOMAIN_FAIL haproxy-config"; fi
+    if ! systemctl is-active --quiet haproxy; then DOMAIN_OK=0; DOMAIN_FAIL="$DOMAIN_FAIL haproxy"; fi
+  fi
+  # I-04: port stack SSH-WS harus listen (10017 shield, 10018 bridge, 10019 router).
+  for _p in 10017 10018 10019; do
+    if ! ss -tln 2>/dev/null | grep -q ":$_p "; then DOMAIN_OK=0; DOMAIN_FAIL="$DOMAIN_FAIL ws:$_p"; fi
+  done
+fi
+
+if [ "$CORE_OK" != "1" ]; then
+  echo "=== VERDICT: INSTALL GAGAL (service mati:$CORE_FAIL ) ===" >&2
+  echo "Periksa pesan error di atas lalu jalankan ulang." >&2
+  exit 1
+fi
+echo "=== VERDICT XRAY: AKTIF ==="
+if [ "$XRAY_INSTALLED" = "1" ]; then
+  if [ "$DOMAIN_OK" = "1" ]; then
+    echo "=== VERDICT VPN DOMAIN: JALAN ==="
+  else
+    echo "=== VERDICT VPN DOMAIN: TIDAK JALAN ($DOMAIN_FAIL ) ==="
+  fi
+fi
+if [ "$TLS_PENDING" = "1" ]; then
+  echo "TLS pending: sertifikat belum ada. Pastikan DNS domain sudah mengarah ke IP VPS,"
+  echo "lalu jalankan 'change-domain' dari menu untuk menerbitkan sertifikat."
+fi
+if [ "$XRAY_INSTALLED" = "1" ] && [ "$DOMAIN_OK" = "1" ]; then
+  echo "=== VERDICT: INSTALASI BERHASIL SELESAI ==="
+elif [ "$XRAY_INSTALLED" = "1" ]; then
+  echo "=== VERDICT: INSTALASI SELESAI — VPN DOMAIN BELUM JALAN ==="
+else
+  echo "=== VERDICT: INSTALASI SELESAI (Xray dilewati) ==="
+fi
 if [ "$WITH_BOT" = 1 ]; then
   echo "Bot Telegram (PM2: darren-bot) dan VPN API (port 5890) aktif."
 elif [ "$REMOTE" = 1 ]; then

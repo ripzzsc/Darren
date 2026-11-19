@@ -1,8 +1,12 @@
 #!/bin/bash
 
 function send-log(){
-CHATID="6617783693"
-KEY="6751589620:AAHwjP6dzZhuqeyUOdYFc6742Q1YUVF1EjM"
+# I-13: token bot dibaca dari /etc/bot/.bot.db seperti script limit lain
+# (vmess/vless/trojan/shadowsocks) — JANGAN hardcode token di repo.
+# Token lama yang pernah ter-commit di file ini harus dicabut/dirotasi
+# manual oleh owner di BotFather (langkah terpisah, bukan oleh script ini).
+CHATID=$(grep -E "^#bot# " "/etc/bot/.bot.db" | cut -d ' ' -f 3)
+KEY=$(grep -E "^#bot# " "/etc/bot/.bot.db" | cut -d ' ' -f 2)
 TIME="10"
 URL="https://api.telegram.org/bot$KEY/sendMessage"
 TEXT="

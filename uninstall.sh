@@ -7,7 +7,7 @@
 # (konfig TLS-nya TIDAK ikut dihapus — lihat daftar tersisa di bawah).
 # Ini uninstall TOTAL untuk stack Darren — setelah ini, install ulang
 # (install.sh) akan memasang Node/PM2/vnstat lagi dari nol.
-# DAFTAR JUJUR — YANG DIHAPUS: bot ripzz-bot-js (pm2) + daemon PM2 +
+# DAFTAR JUJUR — YANG DIHAPUS: bot darren-bot (pm2) + daemon PM2 +
 # startup pm2-root + ~/.pm2, PM2 global, service vpn-api + xray + unitnya
 # + drop-in xray + unit/script limit, file /root/bot-js, /root/vpn-api.py,
 # /etc/vpn-api, /usr/local/bin/xray, /etc/xray, menu /usr/bin/menu +
@@ -36,7 +36,7 @@
 # (backup TIDAK mengembalikan Node/PM2/vnstat yang terhapus).
 #
 # Cara pakai di VPS (sebagai root):
-#   curl -fsSL https://raw.githubusercontent.com/bungkangeddeng-cyber/Darren/main/uninstall.sh -o uninstall.sh
+#   curl -fsSL https://raw.githubusercontent.com/ripzzsc/Darren/main/uninstall.sh -o uninstall.sh
 #   chmod +x uninstall.sh
 #   ./uninstall.sh
 #
@@ -206,6 +206,9 @@ hapus_stack_darren() {
   # 1. Bot PM2: hapus proses + matikan daemon + cabut startup.
   #    (pm2 save lama dihapus dari alur: tidak ada gunanya menyimpan dump
   #    kosong tepat sebelum PM2 dan ~/.pm2 dihapus total di bawah.)
+  # I-18: nama PM2 bot adalah darren-bot; hapus juga nama lama
+  # ripzz-bot-js untuk jaga-jaga bila ada VPS lama.
+  pm2 delete darren-bot 2>/dev/null || true
   pm2 delete ripzz-bot-js 2>/dev/null || true
   pm2 kill 2>/dev/null || true
   pm2 unstartup systemd -u root --hp /root 2>/dev/null || true
@@ -309,7 +312,7 @@ main() {
 
   echo "=== Uninstaller Darren (TOTAL stack Darren) ==="
   echo "Yang akan dihapus:"
-  echo "  - bot ripzz-bot-js (pm2) + daemon PM2 + startup pm2-root + ~/.pm2"
+  echo "  - bot darren-bot (pm2) + daemon PM2 + startup pm2-root + ~/.pm2"
   echo "  - PM2 global (npm uninstall -g pm2 + /usr/lib/node_modules/pm2)"
   echo "  - service vpn-api + xray + file unitnya + direktori drop-in xray"
   echo "  - service limit + stack SSH-WS (ws, ws-shield, ws-bridge, tls-router)"
