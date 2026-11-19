@@ -90,11 +90,15 @@ di awal tiap script; helper yang sama juga ikut di dalam
 `v4-main/Cdy/menu.zip` (terpasang ke `/usr/bin/cek-izin`).
 
 Satu allowlist untuk install DAN menu, di
-[izin-install.txt](izin-install.txt), format tiap baris: `IP|Nama`
-(Nama opsional; IP saja tanpa `|` juga boleh). Baris `#` dan baris
-kosong diabaikan. Tanpa tanggal expired, tanpa kolom STATUS.
+[izin-install.txt](izin-install.txt), format tiap baris: `IP|Nama|TanggalExpired`
+(Nama opsional; IP saja tanpa `|` juga boleh. TanggalExpired format
+`YYYY-MM-DD`, contoh `203.0.113.10|Budi|2027-01-31`; kosong = tanpa batas
+untuk server owner. Berlaku sampai akhir tanggal expired, besoknya
+DITOLAK; bila tersisa 7 hari atau kurang muncul peringatan). Baris `#`
+dan baris kosong diabaikan. Tanpa kolom STATUS.
 Tambah server baru cukup tambah satu baris di file itu lalu push;
-menu membaca file itu dari GitHub (cache 6 jam di VPS). IP yang
+menu membaca file itu dari GitHub (cache 1 jam di VPS bila GitHub
+tidak terjangkau). IP yang
 tidak ada di file itu = instalasi dan menu DITOLAK. Alasan penolakan
 dicatat jelas, dan log auditnya ada di `/var/log/izin.log` di VPS.
 Jangan taruh secret di file ini.
@@ -239,7 +243,7 @@ penghapusan apa pun):
 - `install.sh` — installer VPS baru (bot TIDAK diinstal di awal secara default; pakai `--with-bot` bila mau bot langsung terinstal; dukung token repo private + token baca izin menu)
 - `uninstall.sh` — uninstall total (backup dulu, lalu hapus bot, API, Xray, menu, permission)
 - `v4-main/Cdy/cek-izin` — helper permission menu (juga di dalam menu.zip)
-- `izin-install.txt` — daftar server yang diizinkan (IP|Nama, satu format untuk install dan menu)
+- `izin-install.txt` — daftar server yang diizinkan (IP|Nama|TanggalExpired, satu format untuk install dan menu)
 - `v4-main/Cdy/izin-servers.txt` — cermin allowlist yang sama (untuk menu lama)
 - `v4-main/install-bot.sh` — installer bot Telegram mandiri, dipanggil dari menu (juga terpasang sebagai `/usr/bin/install-botjs`)
 - `v4-main/` — source yang sudah diperbaiki (bot-js, BotVPN2, Api, Cfg, Fls, Vpn, dll)

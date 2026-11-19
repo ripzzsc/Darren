@@ -312,9 +312,10 @@ fi
 
 # ---------- 4b. Izin install (allowlist GitHub) ----------
 # Format izin-install.txt (SATU format untuk install dan menu):
-#   satu IP per baris, opsional |Nama. Baris # dan baris kosong diabaikan.
-#   Contoh: 203.0.113.10|Budi
-#   Tanpa tanggal expired dan tanpa kolom STATUS.
+#   satu IP per baris: IP|Nama|TanggalExpired (tanggal YYYY-MM-DD,
+#   kosong = tanpa batas). Contoh: 203.0.113.10|Budi|2027-01-31.
+#   Baris # dan baris kosong diabaikan. Masa sewa habis = install
+#   DITOLAK (berlaku sampai akhir tanggal expired).
 # Validasi satu alamat IPv4 (4 oktet 0-255, tanpa nol di depan).
 valid_ipv4() {
   local ip="$1"
@@ -325,6 +326,21 @@ valid_ipv4() {
     ((10#$o > 255)) && return 1
   done
   return 0
+}
+
+# Validasi tanggal kalender format YYYY-MM-DD (tolak 2026-02-30, 2026-13-01, 31-01-2027).
+valid_tanggal() {
+  local d="$1"
+  [[ "$d" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || return 1
+  [ "$(date -d "$d" +%F 2>/dev/null)" = "$d" ] || return 1
+  return 0
+}
+
+# Ambil kolom tanggal expired (kolom ke-3) dari satu baris allowlist; kosong bila tidak ada.
+kolom_expired() {
+  local rest="${1#*|}"
+  [ "$rest" = "$1" ] && { echo ""; return; }
+  case "$rest" in *"|"*) echo "${rest##*|}";; *) echo "";; esac
 }
 
 check_install_license() {
@@ -356,6 +372,10 @@ check_install_license() {
       echo "PERINGATAN: izin-install.txt baris $_ln diabaikan (format IP tidak valid)." >&2; continue
     fi
     case " $_lseen " in *" $_lip "*) echo "PERINGATAN: izin-install.txt baris $_ln diabaikan (IP duplikat)." >&2; continue;; esac
+    _lexp="$(kolom_expired "$_lraw")"
+    if [ -n "$_lexp" ] && ! valid_tanggal "$_lexp"; then
+      echo "PERINGATAN: izin-install.txt baris $_ln diabaikan (tanggal expired tidak valid, pakai YYYY-MM-DD)." >&2; continue
+    fi
     _lseen="$_lseen $_lip"
   done < "$allow"
   # Cocokkan IP persis di awal baris (titik di-escape agar tidak cocok IP lain).
@@ -364,12 +384,38 @@ check_install_license() {
   line="$(grep -m1 -E "^${my_ip_esc}(\|.*)?$" "$allow" 2>/dev/null || true)"
   if [ -z "$line" ]; then
     echo "ERROR: IP VPS ini ($my_ip) TIDAK TERDAFTAR di izin-install.txt." >&2
-    echo "Tambahkan baris '$my_ip|nama-server' ke izin-install.txt di repo (bila baru di-commit, tunggu ±5 menit karena cache CDN GitHub), lalu jalankan ulang." >&2
+    echo "Tambahkan baris '$my_ip|nama-server|2027-01-31' ke izin-install.txt di repo (tanggal expired boleh dikosongkan untuk server tanpa batas; bila baru di-commit, tunggu ±5 menit karena cache CDN GitHub), lalu jalankan ulang." >&2
     exit 1
   fi
   local found_name="${line#*|}"
-  [ "$found_name" = "$line" ] && found_name=""
-  echo "Izin install OK: $my_ip — ${found_name:-tanpa nama}."
+  if [ "$found_name" = "$line" ]; then
+    found_name=""
+  else
+    found_name="${found_name%%|*}"
+  fi
+  # Masa sewa: berlaku sampai AKHIR tanggal expired (tanggal VPS).
+  local found_exp="$(kolom_expired "$line")"
+  if [ -n "$found_exp" ]; then
+    if ! valid_tanggal "$found_exp"; then
+      echo "ERROR: tanggal expired di izin-install.txt tidak valid ('$found_exp', pakai format YYYY-MM-DD)." >&2
+      echo "Perbaiki baris IP $my_ip di izin-install.txt di repo, lalu jalankan ulang." >&2
+      exit 1
+    fi
+    local _sisa=$(( ($(date -d "$found_exp" +%s) - $(date -d "$(date +%F)" +%s)) / 86400 ))
+    if [ "$_sisa" -lt 0 ]; then
+      echo "ERROR: masa sewa script untuk IP $my_ip habis pada $found_exp." >&2
+      echo "Perpanjang: ubah tanggal expired baris IP ini di izin-install.txt di repo, lalu jalankan ulang." >&2
+      exit 1
+    fi
+    if [ "$_sisa" -le 7 ]; then
+      if [ "$_sisa" -eq 0 ]; then
+        echo "PERINGATAN: masa sewa script habis HARI INI ($found_exp), perpanjang di izin-install.txt." >&2
+      else
+        echo "PERINGATAN: masa sewa script habis dalam $_sisa hari ($found_exp), perpanjang di izin-install.txt." >&2
+      fi
+    fi
+  fi
+  echo "Izin install OK: $my_ip — ${found_name:-tanpa nama}${found_exp:+ (sewa s/d $found_exp)}."
 }
 
 if [ "$REMOTE" = 0 ]; then

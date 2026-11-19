@@ -2,9 +2,11 @@
 # cek-izin — permission menu Darren.
 # Izin dikendalikan penuh dari repo GitHub sendiri, bukan server luar.
 # Sumber allowlist: https://raw.githubusercontent.com/ripzzsc/Darren/main/izin-install.txt
-# Format (SATU format untuk install dan menu): satu IP per baris, opsional |Nama.
-#   Contoh: 203.0.113.10|Budi — tanpa tanggal expired, tanpa kolom STATUS.
-#   Baris # dan baris kosong diabaikan. IP tidak ada di file = DITOLAK.
+# Format (SATU format untuk install dan menu): satu IP per baris,
+#   IP|Nama|TanggalExpired — tanggal format YYYY-MM-DD (contoh: 203.0.113.10|Budi|2027-01-31).
+#   TanggalExpired kosong = tanpa batas (server owner). Baris # dan baris kosong diabaikan.
+#   IP tidak ada di file = DITOLAK. Masa sewa habis = DITOLAK (berlaku sampai akhir tanggal expired).
+#   Bila expired 7 hari lagi atau kurang, muncul peringatan tapi masih lolos.
 # Real-time: cek SELALU ambil file baru dari GitHub dulu; cache lokal
 # (/etc/xray/izin-cache.txt, TTL 1 jam) hanya cadangan bila GitHub tidak
 # terjangkau. Bila cache kadaluarsa, DITOLAK. Catatan: setelah edit file di
@@ -33,6 +35,21 @@ detect_ip() {
   echo "$ip"
 }
 
+# Validasi tanggal kalender format YYYY-MM-DD (tolak 2026-02-30, 2026-13-01, 31-01-2027).
+valid_tanggal() {
+  local d="$1"
+  [[ "$d" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || return 1
+  [ "$(date -d "$d" +%F 2>/dev/null)" = "$d" ] || return 1
+  return 0
+}
+
+# Ambil kolom tanggal expired (kolom ke-3) dari satu baris allowlist; kosong bila tidak ada.
+kolom_expired() {
+  local rest="${1#*|}"
+  [ "$rest" = "$1" ] && { echo ""; return; }
+  case "$rest" in *"|"*) echo "${rest##*|}";; *) echo "";; esac
+}
+
 # Validasi satu alamat IPv4 (4 oktet 0-255, tanpa nol di depan).
 valid_ipv4() {
   local ip="$1"
@@ -51,7 +68,7 @@ log() { echo "$(date -Iseconds) ip=${MYIP:-?} hasil=$1 alasan=$2" >> "$LOG_FILE"
 
 deny() {
   echo "IZIN DITOLAK: $1"
-  echo "Perbaiki: tambahkan IP ini ke izin-install.txt di repo Darren (format: IP|Nama, satu per baris), tunggu ±5 menit bila baru di-commit (cache CDN GitHub), lalu jalankan ulang menu."
+  echo "${2:-Perbaiki: tambahkan IP ini ke izin-install.txt di repo Darren (format: IP|Nama|TanggalExpired, satu per baris), tunggu ±5 menit bila baru di-commit (cache CDN GitHub), lalu jalankan ulang menu.}"
   log "DITOLAK" "$1"
   exit 1
 }
@@ -103,6 +120,12 @@ while IFS= read -r _raw || [ -n "$_raw" ]; do
     log "PERINGATAN" "baris $_lineno duplikat: $_line"
     continue
   fi
+  _exp="$(kolom_expired "$_line")"
+  if [ -n "$_exp" ] && ! valid_tanggal "$_exp"; then
+    echo "PERINGATAN: izin-install.txt baris $_lineno diabaikan (tanggal expired tidak valid, pakai YYYY-MM-DD): $_line" >&2
+    log "PERINGATAN" "baris $_lineno tanggal salah: $_line"
+    continue
+  fi
   _seen[$_ip]=1
   printf '%s\n' "$_line" >> "$CLEAN_FILE"
   _valid=$((_valid + 1))
@@ -115,7 +138,30 @@ LINE="$(grep -m1 -E "^${MYIP_ESC}(\\|.*)?$" "$CLEAN_FILE" 2>/dev/null || true)"
 [ -z "$LINE" ] && deny "IP $MYIP tidak terdaftar di allowlist"
 
 NAMA="${LINE#*|}"
-[ "$NAMA" = "$LINE" ] && NAMA=""
+if [ "$NAMA" = "$LINE" ]; then
+  NAMA=""
+else
+  NAMA="${NAMA%%|*}"
+fi
 
-log "LOLOS" "server=${NAMA:-tanpa nama}"
+# Masa sewa: berlaku sampai AKHIR tanggal expired (tanggal VPS).
+EXP="$(kolom_expired "$LINE")"
+if [ -n "$EXP" ]; then
+  _today="$(date +%F)"
+  _sisa=$(( ($(date -d "$EXP" +%s) - $(date -d "$_today" +%s)) / 86400 ))
+  if [ "$_sisa" -lt 0 ]; then
+    deny "masa sewa script untuk IP $MYIP habis pada $EXP" "Perpanjang: ubah tanggal expired IP ini di izin-install.txt di repo Darren (format: IP|Nama|YYYY-MM-DD), tunggu ±5 menit bila baru di-commit (cache CDN GitHub), lalu jalankan ulang menu."
+  fi
+  if [ "$_sisa" -le 7 ]; then
+    if [ "$_sisa" -eq 0 ]; then
+      echo "PERINGATAN: masa sewa script habis HARI INI ($EXP), perpanjang di izin-install.txt." >&2
+      log "PERINGATAN" "masa sewa habis hari ini ($EXP)"
+    else
+      echo "PERINGATAN: masa sewa script habis dalam $_sisa hari ($EXP), perpanjang di izin-install.txt." >&2
+      log "PERINGATAN" "masa sewa habis dalam $_sisa hari ($EXP)"
+    fi
+  fi
+fi
+
+log "LOLOS" "server=${NAMA:-tanpa nama} expired=${EXP:-tanpa batas}"
 exit 0

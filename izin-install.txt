@@ -1,18 +1,24 @@
 # Izin Darren — satu allowlist untuk install DAN menu.
 #
 # FORMAT (satu IP per baris):
-#   IP|Nama
-#   IP   = IP publik VPS (bukan domain, bukan IP lokal).
-#   Nama = nama server / penyewa, opsional, boleh mengandung spasi.
-#          Bila tidak ada nama, tulis IP saja tanpa |.
+#   IP|Nama|TanggalExpired
+#   IP             = IP publik VPS (bukan domain, bukan IP lokal).
+#   Nama           = nama server / penyewa, opsional, boleh mengandung spasi.
+#                    Bila tidak ada nama, tulis IP saja tanpa |.
+#   TanggalExpired = tanggal habis masa sewa script, format YYYY-MM-DD
+#                    (contoh: 2027-01-31). Kosongkan = tanpa batas
+#                    (server owner). Berlaku sampai AKHIR tanggal itu;
+#                    besoknya install dan menu DITOLAK. Bila tersisa
+#                    7 hari atau kurang, muncul peringatan.
 #   Baris diawali # = komentar (diabaikan). Baris kosong diabaikan.
-#   Tanpa tanggal expired, tanpa kolom STATUS.
+#   Tanpa kolom STATUS.
 #   IP yang tidak ada di file ini = instalasi dan menu DITOLAK.
 #
-# CARA PAKAI (owner): tambah satu baris per server, lalu commit/push.
-#   Contoh: 203.0.113.10|Budi
+# CARA PAKAI (owner): tambah satu baris per server/penyewa, lalu commit/push.
+#   Contoh sewa:        203.0.113.10|Budi|2027-01-31
+#   Contoh tanpa batas:  203.0.113.11|Server Owner|
 #
 # Server yang diizinkan:
-146.190.107.177|server2 (milik owner)
-43.159.43.177|BIZNET (milik owner)
-206.189.91.251|darren
+146.190.107.177|server2 (milik owner)|
+43.159.43.177|BIZNET (milik owner)|
+206.189.91.251|darren|
