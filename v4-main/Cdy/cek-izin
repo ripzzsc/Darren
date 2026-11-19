@@ -5,8 +5,13 @@
 # Format (SATU format untuk install dan menu): satu IP per baris, opsional |Nama.
 #   Contoh: 203.0.113.10|Budi — tanpa tanggal expired, tanpa kolom STATUS.
 #   Baris # dan baris kosong diabaikan. IP tidak ada di file = DITOLAK.
-# Cache lokal: /etc/xray/izin-cache.txt (TTL 6 jam). Bila GitHub tidak terjangkau
-# dan cache masih berlaku, izin tetap berlaku. Bila cache kadaluarsa, DITOLAK.
+# Real-time: cek SELALU ambil file baru dari GitHub dulu; cache lokal
+# (/etc/xray/izin-cache.txt, TTL 1 jam) hanya cadangan bila GitHub tidak
+# terjangkau. Bila cache kadaluarsa, DITOLAK. Catatan: setelah edit file di
+# GitHub, CDN GitHub bisa menyajikan file lama sampai ±5 menit.
+# Setiap baris allowlist divalidasi: format IP salah dan IP duplikat
+# diabaikan (peringatan dicatat di log), supaya salah ketik tidak membuat
+# penolakan yang membingungkan.
 # Repo private: pasang token baca GitHub di /etc/xray/izin-token (mode 600).
 # Token TIDAK PERNAH dicetak atau ditulis ke log oleh script ini.
 # Keluar: 0 = lolos, 1 = ditolak (alasan dicetak jelas).
@@ -14,7 +19,7 @@
 ALLOWLIST_URL="https://raw.githubusercontent.com/ripzzsc/Darren/main/izin-install.txt"
 CACHE_FILE="/etc/xray/izin-cache.txt"
 TOKEN_FILE="/etc/xray/izin-token"
-CACHE_TTL=21600
+CACHE_TTL=3600
 LOG_FILE="/var/log/izin.log"
 
 detect_ip() {
@@ -28,13 +33,25 @@ detect_ip() {
   echo "$ip"
 }
 
+# Validasi satu alamat IPv4 (4 oktet 0-255, tanpa nol di depan).
+valid_ipv4() {
+  local ip="$1"
+  [[ "$ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+  local o
+  for o in "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}"; do
+    [[ "$o" =~ ^0[0-9] ]] && return 1
+    ((10#$o > 255)) && return 1
+  done
+  return 0
+}
+
 MYIP="$(detect_ip)"
 
 log() { echo "$(date -Iseconds) ip=${MYIP:-?} hasil=$1 alasan=$2" >> "$LOG_FILE" 2>/dev/null || true; }
 
 deny() {
   echo "IZIN DITOLAK: $1"
-  echo "Perbaiki: tambahkan IP ini ke izin-install.txt di repo Darren, lalu jalankan ulang menu."
+  echo "Perbaiki: tambahkan IP ini ke izin-install.txt di repo Darren (format: IP|Nama, satu per baris), tunggu ±5 menit bila baru di-commit (cache CDN GitHub), lalu jalankan ulang menu."
   log "DITOLAK" "$1"
   exit 1
 }
@@ -62,9 +79,39 @@ if [ "$FETCH_OK" -eq 0 ]; then
   fi
 fi
 
-# Cocokkan IP persis di awal baris (titik di-escape).
+# Bersihkan allowlist: buang baris format salah + duplikat (peringatan
+# dicatat di log dan stderr), supaya yang dicocokkan hanya entri valid.
+CLEAN_FILE="${CACHE_FILE}.bersih"
+: > "$CLEAN_FILE" 2>/dev/null || deny "tidak bisa menulis $CLEAN_FILE"
+_valid=0
+_lineno=0
+declare -A _seen=()
+while IFS= read -r _raw || [ -n "$_raw" ]; do
+  _lineno=$((_lineno + 1))
+  _line="${_raw#"${_raw%%[![:space:]]*}"}"
+  _line="${_line%"${_line##*[![:space:]]}"}"
+  [ -z "$_line" ] && continue
+  case "$_line" in \#*) continue;; esac
+  _ip="${_line%%|*}"
+  if ! valid_ipv4 "$_ip"; then
+    echo "PERINGATAN: izin-install.txt baris $_lineno diabaikan (format IP tidak valid): $_line" >&2
+    log "PERINGATAN" "baris $_lineno format salah: $_line"
+    continue
+  fi
+  if [ -n "${_seen[$_ip]:-}" ]; then
+    echo "PERINGATAN: izin-install.txt baris $_lineno diabaikan (IP duplikat, dipakai baris pertama): $_line" >&2
+    log "PERINGATAN" "baris $_lineno duplikat: $_line"
+    continue
+  fi
+  _seen[$_ip]=1
+  printf '%s\n' "$_line" >> "$CLEAN_FILE"
+  _valid=$((_valid + 1))
+done < "$CACHE_FILE"
+[ "$_valid" -eq 0 ] && deny "allowlist tidak berisi entri IP yang valid (periksa format izin-install.txt di GitHub)"
+
+# Cocokkan IP persis di awal baris (titik di-escape) pada daftar bersih.
 MYIP_ESC="${MYIP//./\\.}"
-LINE="$(grep -m1 -E "^${MYIP_ESC}(\\|.*)?$" "$CACHE_FILE" 2>/dev/null || true)"
+LINE="$(grep -m1 -E "^${MYIP_ESC}(\\|.*)?$" "$CLEAN_FILE" 2>/dev/null || true)"
 [ -z "$LINE" ] && deny "IP $MYIP tidak terdaftar di allowlist"
 
 NAMA="${LINE#*|}"

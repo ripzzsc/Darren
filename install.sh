@@ -315,6 +315,18 @@ fi
 #   satu IP per baris, opsional |Nama. Baris # dan baris kosong diabaikan.
 #   Contoh: 203.0.113.10|Budi
 #   Tanpa tanggal expired dan tanpa kolom STATUS.
+# Validasi satu alamat IPv4 (4 oktet 0-255, tanpa nol di depan).
+valid_ipv4() {
+  local ip="$1"
+  [[ "$ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+  local o
+  for o in "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}"; do
+    [[ "$o" =~ ^0[0-9] ]] && return 1
+    ((10#$o > 255)) && return 1
+  done
+  return 0
+}
+
 check_install_license() {
   local allow="$SRC_DIR/izin-install.txt"
   if [ ! -f "$allow" ]; then
@@ -330,13 +342,29 @@ check_install_license() {
     echo "ERROR: IP publik VPS ini tidak bisa ditentukan." >&2
     exit 1
   fi
+  # Validasi ringan: beri peringatan untuk baris format salah/duplikat.
+  # Baris seperti itu tidak akan pernah cocok, jadi tanpa peringatan
+  # penolakan "TIDAK TERDAFTAR" di bawah jadi membingungkan.
+  local _ln=0 _lip="" _lraw="" _lseen=""
+  while IFS= read -r _lraw || [ -n "$_lraw" ]; do
+    _ln=$((_ln + 1))
+    _lraw="${_lraw#"${_lraw%%[![:space:]]*}"}"; _lraw="${_lraw%"${_lraw##*[![:space:]]}"}"
+    [ -z "$_lraw" ] && continue
+    case "$_lraw" in \#*) continue;; esac
+    _lip="${_lraw%%|*}"
+    if ! valid_ipv4 "$_lip"; then
+      echo "PERINGATAN: izin-install.txt baris $_ln diabaikan (format IP tidak valid)." >&2; continue
+    fi
+    case " $_lseen " in *" $_lip "*) echo "PERINGATAN: izin-install.txt baris $_ln diabaikan (IP duplikat)." >&2; continue;; esac
+    _lseen="$_lseen $_lip"
+  done < "$allow"
   # Cocokkan IP persis di awal baris (titik di-escape agar tidak cocok IP lain).
-  local my_ip_esc="${my_ip//./\.}"
+  local my_ip_esc="${my_ip//./\\.}"
   local line=""
   line="$(grep -m1 -E "^${my_ip_esc}(\|.*)?$" "$allow" 2>/dev/null || true)"
   if [ -z "$line" ]; then
     echo "ERROR: IP VPS ini ($my_ip) TIDAK TERDAFTAR di izin-install.txt." >&2
-    echo "Tambahkan baris '$my_ip|nama-server' ke izin-install.txt di repo, lalu jalankan ulang." >&2
+    echo "Tambahkan baris '$my_ip|nama-server' ke izin-install.txt di repo (bila baru di-commit, tunggu ±5 menit karena cache CDN GitHub), lalu jalankan ulang." >&2
     exit 1
   fi
   local found_name="${line#*|}"

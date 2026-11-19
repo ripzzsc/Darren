@@ -16,4 +16,3 @@
 146.190.107.177|server2 (milik owner)
 43.159.43.177|BIZNET (milik owner)
 206.189.91.251|darren
-43.159.43.177|coba

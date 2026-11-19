@@ -281,6 +281,14 @@ mkdir -p "$_tmpdir/extract"
 unzip -qo "$_tmpdir/menu.zip" -d "$_tmpdir/extract"
 find "$_tmpdir/extract" -type f -exec chmod +x {} +
 find "$_tmpdir/extract" -type f -exec cp {} /usr/bin/ \;
+# Izin: segarkan cek-izin dari repo (fail-soft) supaya perbaikan checker
+# tidak tertimpa versi lama di menu.zip.
+if curl -fsSL --max-time 15 https://raw.githubusercontent.com/ripzzsc/Darren/main/v4-main/Cdy/cek-izin -o "$_tmpdir/cek-izin.baru" 2>/dev/null && bash -n "$_tmpdir/cek-izin.baru" 2>/dev/null; then
+  cp "$_tmpdir/cek-izin.baru" /usr/bin/cek-izin
+  chmod +x /usr/bin/cek-izin
+else
+  echo "PERINGATAN: gagal menyegarkan cek-izin dari repo, memakai versi dari menu.zip." >&2
+fi
 rm -rf "$_tmpdir"
 echo "$versi_terbaru" > /usr/bin/menu_version  # Update versi lokal
 CHATID=$(grep -E "^#bot# " "/etc/bot/.bot.db" | cut -d ' ' -f 3)
