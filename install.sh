@@ -353,6 +353,25 @@ is_private_ip() {
   return 1
 }
 
+# Pastikan satu service jalan: enable + restart, tunggu, cek aktif;
+# bila masih mati, restart sekali lagi. Gagal dua kali = return 1
+# (trap ERR mencetak VERDICT GAGAL) — bukan sekadar peringatan, supaya
+# install tidak pernah selesai dengan service mati tanpa ketahuan.
+pastikan_jalan() {
+  local _svc="$1" _coba=0
+  systemctl enable "$_svc" 2>/dev/null || true
+  while [ "$_coba" -lt 2 ]; do
+    systemctl restart "$_svc" 2>/dev/null || true
+    sleep 2
+    if systemctl is-active --quiet "$_svc"; then
+      return 0
+    fi
+    _coba=$((_coba + 1))
+  done
+  echo "ERROR: $_svc tidak bisa start setelah 2 percobaan." >&2
+  return 1
+}
+
 check_install_license() {
   local allow="$SRC_DIR/izin-install.txt"
   if [ ! -f "$allow" ]; then
@@ -692,8 +711,7 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable vpn-api.service
-systemctl restart vpn-api.service
+pastikan_jalan vpn-api.service
 
 # Firewall port 5890 (hanya untuk localhost atau REMOTE_MAIN_IP jika remote)
 if command -v ufw >/dev/null 2>&1 && ufw status | grep -qw active; then
@@ -794,18 +812,28 @@ EOF
         # Port 80 harus bebas untuk tantangan HTTP-01.
         systemctl stop nginx haproxy 2>/dev/null || true
         /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt >/dev/null 2>&1 || true
-        if /root/.acme.sh/acme.sh --issue --standalone -d "$VPN_DOMAIN" --keylength ec-256; then
+        _issue_ok=0
+        if /root/.acme.sh/acme.sh --issue --standalone -d "$VPN_DOMAIN" --keylength ec-256 > /tmp/acme-issue.log 2>&1; then
+          _issue_ok=1
+        else
+          echo "PERINGATAN: acme.sh gagal menerbitkan sertifikat untuk $VPN_DOMAIN — lanjut mode TLS pending." >&2
+          echo "  (5 baris terakhir /tmp/acme-issue.log:)" >&2
+          tail -n 5 /tmp/acme-issue.log 2>/dev/null >&2 || true
+        fi
+        # Sertifikat lama di acme.sh (masih berlaku) tetap bisa dipasang
+        # walau --issue kali ini gagal/dilewati — jangan lewatkan --installcert.
+        if [ -f "/root/.acme.sh/${VPN_DOMAIN}_ecc/fullchain.cer" ] && [ -f "/root/.acme.sh/${VPN_DOMAIN}_ecc/${VPN_DOMAIN}.key" ]; then
           if /root/.acme.sh/acme.sh --installcert -d "$VPN_DOMAIN" --fullchainpath /etc/xray/xray.crt --keypath /etc/xray/xray.key --ecc \
-             && [ -f "/root/.acme.sh/${VPN_DOMAIN}_ecc/fullchain.cer" ] && [ -f "/root/.acme.sh/${VPN_DOMAIN}_ecc/${VPN_DOMAIN}.key" ]; then
+             && [ -s /etc/xray/xray.crt ] && [ -s /etc/xray/xray.key ]; then
             cat "/root/.acme.sh/${VPN_DOMAIN}_ecc/fullchain.cer" "/root/.acme.sh/${VPN_DOMAIN}_ecc/${VPN_DOMAIN}.key" > /etc/haproxy/hap.pem
             chmod 600 /etc/xray/xray.key /etc/haproxy/hap.pem
-            echo "Sertifikat Let's Encrypt untuk $VPN_DOMAIN terbit."
+            echo "Sertifikat Let's Encrypt untuk $VPN_DOMAIN terpasang."
             TLS_OK=1
           else
             echo "PERINGATAN: gagal memasang sertifikat ke /etc/xray — lanjut mode TLS pending." >&2
           fi
-        else
-          echo "PERINGATAN: acme.sh gagal menerbitkan sertifikat untuk $VPN_DOMAIN — lanjut mode TLS pending." >&2
+        elif [ "$_issue_ok" = "1" ]; then
+          echo "PERINGATAN: --issue berhasil tapi file sertifikat tidak ditemukan di acme.sh — lanjut mode TLS pending." >&2
         fi
       fi
     else
@@ -895,22 +923,25 @@ EOF
   fi
 
   systemctl daemon-reload
-  systemctl enable xray.service haproxy nginx
-  # I-01: restart wajib jalan — kegagalan di sini menggagalkan install
-  # (trap ERR mencetak VERDICT GAGAL), bukan ditelan "|| true".
-  # haproxy hanya di-restart bila sertifikat ada; bila TLS pending,
-  # haproxy sengaja tidak jalan (tidak ada hap.pem).
-  systemctl restart xray.service
-  systemctl restart nginx
-  if [ "$TLS_OK" = "1" ]; then
-    systemctl restart haproxy
+  # Auto-running total: semua service inti dipastikan jalan (enable +
+  # restart + cek aktif + coba sekali lagi). Gagal dua kali = install
+  # GAGAL via trap ERR, bukan selesai dengan service mati.
+  pastikan_jalan xray.service
+  pastikan_jalan nginx
+  # haproxy hanya butuh hap.pem (boleh sertifikat lama yang masih berlaku),
+  # bukan TLS_OK — bila hap.pem ada, haproxy harus jalan dan di-gate.
+  # Bila hap.pem tidak ada (TLS pending dari nol), haproxy memang belum bisa jalan.
+  if [ -s /etc/haproxy/hap.pem ]; then
+    pastikan_jalan haproxy
+  else
+    echo "hap.pem belum ada — haproxy belum bisa jalan (TLS pending)."
   fi
   # I-04: nyalakan stack SSH-WS (urutan: shield dulu, bridge Requires shield).
-  systemctl enable ws-shield.service ws-bridge.service tls-router.service ws.service 2>/dev/null || true
-  systemctl restart ws-shield.service 2>/dev/null || echo "PERINGATAN: ws-shield gagal start — jalur SSH-WS :443 belum jalan." >&2
-  systemctl restart ws-bridge.service 2>/dev/null || echo "PERINGATAN: ws-bridge gagal start — jalur SSH-WS :443 belum jalan." >&2
-  systemctl restart ws.service 2>/dev/null || echo "PERINGATAN: ws gagal start." >&2
-  systemctl restart tls-router.service 2>/dev/null || echo "PERINGATAN: tls-router gagal start — jalur WS :443 belum jalan." >&2
+  # Gagal di sini tidak menggagalkan install (gate di bawah akan melaporkan
+  # DOMAIN TIDAK JALAN bila port/handshake WS mati), tapi tetap dicoba 2x.
+  for _svc in ws-shield ws-bridge ws tls-router; do
+    pastikan_jalan "$_svc.service" 2>/dev/null || echo "PERINGATAN: $_svc gagal start — jalur SSH-WS :443 belum jalan." >&2
+  done
 fi
 
 # ---------- 9. Setup Menu Utama & Limit Script ----------
@@ -951,9 +982,8 @@ if [ -d "$SRC_DIR/v4-main/Fls" ]; then
     fi
   done
   systemctl daemon-reload
-  systemctl enable limitvmess.service limitvless.service limittrojan.service limitshadowsocks.service 2>/dev/null || true
   for _unit in limitvmess limitvless limittrojan limitshadowsocks; do
-    systemctl restart "$_unit.service" 2>/dev/null || echo "PERINGATAN: $_unit gagal start." >&2
+    pastikan_jalan "$_unit.service" 2>/dev/null || echo "PERINGATAN: $_unit gagal start." >&2
   done
 fi
 
@@ -989,15 +1019,20 @@ DOMAIN_FAIL=""
 if [ "$XRAY_INSTALLED" = "1" ]; then
   if [ "$TLS_OK" != "1" ]; then
     DOMAIN_OK=0; DOMAIN_FAIL="$DOMAIN_FAIL tls-pending"
-  else
-    # haproxy hanya bisa jalan bila sertifikat ada; cek konfig + statusnya
-    # hanya dalam kondisi itu (bila TLS pending, haproxy mati itu wajar).
+  fi
+  # haproxy di-gate bila hap.pem ada (boleh sertifikat lama) — bila hap.pem
+  # tidak ada, haproxy memang belum bisa jalan dan itu sudah tercakup tls-pending.
+  if [ -s /etc/haproxy/hap.pem ]; then
     if ! haproxy -c -f /etc/haproxy/haproxy.cfg >/dev/null 2>&1; then DOMAIN_OK=0; DOMAIN_FAIL="$DOMAIN_FAIL haproxy-config"; fi
     if ! systemctl is-active --quiet haproxy; then DOMAIN_OK=0; DOMAIN_FAIL="$DOMAIN_FAIL haproxy"; fi
   fi
   # I-04: port stack SSH-WS harus listen (10017 shield, 10018 bridge, 10019 router).
   for _p in 10017 10018 10019; do
     if ! ss -tln 2>/dev/null | grep -q ":$_p "; then DOMAIN_OK=0; DOMAIN_FAIL="$DOMAIN_FAIL ws:$_p"; fi
+  done
+  # Stack WS harus aktif sebagai service, bukan cuma port-nya listen.
+  for _svc in tls-router ws ws-shield ws-bridge; do
+    if ! systemctl is-active --quiet "$_svc.service"; then DOMAIN_OK=0; DOMAIN_FAIL="$DOMAIN_FAIL $_svc"; fi
   done
   # F-B5: listen saja TIDAK CUKUP — F-B3 lolos gate lama padahal WS mati
   # total. Uji handshake WebSocket sungguhan ke nginx :1010 (harap 101).
@@ -1007,9 +1042,10 @@ if [ "$XRAY_INSTALLED" = "1" ]; then
     -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' -H 'Sec-WebSocket-Version: 13' \
     http://127.0.0.1:1010/vmess 2>/dev/null || echo 000)"
   if [ "$_ws_code" != "101" ]; then DOMAIN_OK=0; DOMAIN_FAIL="$DOMAIN_FAIL ws-handshake:$_ws_code"; fi
-  # Bila TLS jalan, uji juga rantai penuh :443 (haproxy -> tls-router ->
-  # nginx :1010). Gagal di sini berarti WS pelanggan mati walau :1010 lolos.
-  if [ "$TLS_OK" = "1" ]; then
+  # Bila haproxy jalan (hap.pem ada, boleh sertifikat lama), uji juga rantai
+  # penuh :443 (haproxy -> tls-router -> nginx :1010). Gagal di sini berarti
+  # WS pelanggan mati walau :1010 lolos.
+  if [ -s /etc/haproxy/hap.pem ]; then
     _ws443_code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 5 \
       -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
       -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' -H 'Sec-WebSocket-Version: 13' \
@@ -1020,6 +1056,10 @@ if [ "$XRAY_INSTALLED" = "1" ]; then
     _grpc_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 --http2-prior-knowledge http://127.0.0.1:1013/vless-grpc 2>/dev/null || echo 000)"
     if [ "$_grpc_code" != "415" ]; then echo "PERINGATAN: smoke gRPC :1013 mengembalikan $_grpc_code (harap 415) — periksa rute tls-router/gRPC." >&2; fi
   fi
+  # Limit kuota: peringatan saja (bukan gate) bila ada yang mati.
+  for _unit in limitvmess limitvless limittrojan limitshadowsocks; do
+    if ! systemctl is-active --quiet "$_unit.service"; then echo "PERINGATAN: $_unit tidak jalan (limit kuota terkait tidak aktif)." >&2; fi
+  done
 fi
 
 if [ "$CORE_OK" != "1" ]; then

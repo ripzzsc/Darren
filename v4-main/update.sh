@@ -309,3 +309,27 @@ curl -s --max-time $TIME -d "chat_id=$CHATID&disable_web_page_preview=1&text=$TE
 
 # Cek dan jalankan update jika ada
 jalankan_update
+
+# Auto-running: setelah update, pastikan semua service kembali jalan
+# (coba restart sekali bila ada yang mati) dan laporkan yang masih mati.
+# haproxy hanya dicek bila hap.pem ada (tanpa sertifikat ia memang belum bisa jalan).
+_upd_mati=""
+for _svc in xray nginx vpn-api tls-router ws ws-shield ws-bridge limitvmess limitvless limittrojan limitshadowsocks; do
+  if [ -f "/etc/systemd/system/$_svc.service" ] || [ -f "/usr/lib/systemd/system/$_svc.service" ]; then
+    if ! systemctl is-active --quiet "$_svc.service" 2>/dev/null; then
+      systemctl restart "$_svc.service" 2>/dev/null || true
+      sleep 1
+      systemctl is-active --quiet "$_svc.service" 2>/dev/null || _upd_mati="$_upd_mati $_svc"
+    fi
+  fi
+done
+if [ -s /etc/haproxy/hap.pem ] && ! systemctl is-active --quiet haproxy 2>/dev/null; then
+  systemctl restart haproxy 2>/dev/null || true
+  sleep 1
+  systemctl is-active --quiet haproxy 2>/dev/null || _upd_mati="$_upd_mati haproxy"
+fi
+if [ -n "$_upd_mati" ]; then
+  echo "PERINGATAN: service masih mati setelah update:$_upd_mati — periksa 'systemctl status' masing-masing." >&2
+else
+  echo "Semua service jalan setelah update."
+fi
