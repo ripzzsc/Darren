@@ -902,6 +902,27 @@ if [ "$XRAY_INSTALLED" = "1" ]; then
   for _p in 10017 10018 10019; do
     if ! ss -tln 2>/dev/null | grep -q ":$_p "; then DOMAIN_OK=0; DOMAIN_FAIL="$DOMAIN_FAIL ws:$_p"; fi
   done
+  # F-B5: listen saja TIDAK CUKUP — F-B3 lolos gate lama padahal WS mati
+  # total. Uji handshake WebSocket sungguhan ke nginx :1010 (harap 101).
+  # curl di sini meniru klien WS: Upgrade websocket + Sec-WebSocket-Key.
+  _ws_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+    -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+    -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' -H 'Sec-WebSocket-Version: 13' \
+    http://127.0.0.1:1010/vmess 2>/dev/null || echo 000)"
+  if [ "$_ws_code" != "101" ]; then DOMAIN_OK=0; DOMAIN_FAIL="$DOMAIN_FAIL ws-handshake:$_ws_code"; fi
+  # Bila TLS jalan, uji juga rantai penuh :443 (haproxy -> tls-router ->
+  # nginx :1010). Gagal di sini berarti WS pelanggan mati walau :1010 lolos.
+  if [ "$TLS_OK" = "1" ]; then
+    _ws443_code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 5 \
+      -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+      -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' -H 'Sec-WebSocket-Version: 13' \
+      https://127.0.0.1:443/vmess 2>/dev/null || echo 000)"
+    if [ "$_ws443_code" != "101" ]; then DOMAIN_OK=0; DOMAIN_FAIL="$DOMAIN_FAIL ws443-handshake:$_ws443_code"; fi
+    # Smoke gRPC (peringatan saja, bukan gate): GET h2c ke :1013 harap 415
+    # (respons HTTP/2 asli dari lokasi grpc; 415 wajar karena bukan POST gRPC).
+    _grpc_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 --http2-prior-knowledge http://127.0.0.1:1013/vless-grpc 2>/dev/null || echo 000)"
+    if [ "$_grpc_code" != "415" ]; then echo "PERINGATAN: smoke gRPC :1013 mengembalikan $_grpc_code (harap 415) — periksa rute tls-router/gRPC." >&2; fi
+  fi
 fi
 
 if [ "$CORE_OK" != "1" ]; then

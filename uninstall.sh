@@ -4,7 +4,8 @@
 # Menghapus stack Darren: bot-js (pm2), vpn-api, Xray, menu utama,
 # permission (cek-izin), speedtest, DAN Node.js/npm, PM2 (+ startup +
 # ~/.pm2), vnstat, serta service haproxy/nginx yang dipasang installer
-# (konfig TLS-nya TIDAK ikut dihapus — lihat daftar tersisa di bawah).
+# (konfig TLS-nya ikut dihapus sebagian — lihat daftar di bawah: hap.pem
+# TERSISA, tapi /etc/xray/xray.crt+.key ikut terhapus bersama /etc/xray).
 # Ini uninstall TOTAL untuk stack Darren — setelah ini, install ulang
 # (install.sh) akan memasang Node/PM2/vnstat lagi dari nol.
 # DAFTAR JUJUR — YANG DIHAPUS: bot darren-bot (pm2) + daemon PM2 +
@@ -22,9 +23,9 @@
 # stack Darren, repo apt NodeSource, paket haproxy/nginx/at (hanya
 # service-nya dihentikan; hapus manual via apt bila perlu),
 # /etc/haproxy/haproxy.cfg, /etc/nginx/nginx.conf, /var/www/html,
-# sertifikat LE (/etc/haproxy/hap.pem, /etc/xray/xray.crt/.key bila ada
-# — /etc/xray sendiri dihapus, jadi salin dulu bila perlu), data acme.sh
-# (~/.acme.sh), dan — bila menu.zip tidak ditemukan — file menu di luar
+# sertifikat LE: /etc/haproxy/hap.pem TERSISA; /etc/xray/xray.crt/.key
+# IKUT TERHAPUS bersama /etc/xray (salinannya ada di backup, lihat main),
+# data acme.sh (~/.acme.sh), dan — bila menu.zip tidak ditemukan — file menu di luar
 # daftar yang diketahui (dicatat di output, periksa manual /usr/bin).
 # Backup dulu ke /root/darren-uninstall-backup-<waktu>/ sebelum menghapus
 # (mode 700; file secret di dalamnya 600; mencakup bot-js termasuk
@@ -335,7 +336,9 @@ main() {
   echo "  python3, sqlite3, openssl, ca-certificates, gnupg), konfigurasi/kunci"
   echo "  SSH, direktori backup lama, data aplikasi lain, repo apt NodeSource,"
   echo "  paket haproxy/nginx/at, /etc/haproxy/haproxy.cfg, /etc/nginx/nginx.conf,"
-  echo "  /var/www/html, sertifikat LE, dan data acme.sh. Ini BUKAN wipe"
+  echo "  /var/www/html, /etc/haproxy/hap.pem, dan data acme.sh. Sertifikat"
+  echo "  /etc/xray/xray.crt+.key IKUT TERHAPUS bersama /etc/xray — salinannya"
+  echo "  ada di backup (lihat di bawah). Ini BUKAN wipe"
   echo "  total VPS."
   echo ""
   read -r -p "Ketik YA (huruf besar) untuk lanjut uninstall: " confirm || true
@@ -386,6 +389,7 @@ main() {
     rm -rf "$_old"
   done
   echo "Backup di: $BAK"
+  echo "Sertifikat /etc/xray (bila ada) tersimpan di backup: $BAK/xray/xray.crt + xray.key — pulihkan ke /etc/xray/ sebelum install ulang bila mau pakai sertifikat lama."
 
   hapus_stack_darren
 
@@ -398,7 +402,8 @@ main() {
   echo "Tidak dihapus: OS dasar, perkakas generik, konfigurasi/kunci SSH,"
   echo "  direktori backup lama, data aplikasi lain, repo apt NodeSource,"
   echo "  paket haproxy/nginx/at, /etc/haproxy/haproxy.cfg, /etc/nginx/nginx.conf,"
-  echo "  /var/www/html, sertifikat LE, data acme.sh (bukan wipe total VPS)."
+  echo "  /var/www/html, /etc/haproxy/hap.pem, data acme.sh (bukan wipe total VPS)."
+  echo "  Sertifikat /etc/xray/xray.crt+.key ikut terhapus — salinannya di backup di atas."
   echo "  Bila menu.zip tidak ditemukan tadi, periksa /usr/bin untuk sisa file"
   echo "  menu di luar daftar yang diketahui (lihat catatan di atas)."
   echo "Untuk install ulang: jalankan install.sh lagi (Node/PM2/vnstat akan"

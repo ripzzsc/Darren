@@ -7,8 +7,12 @@ macam aliran lewat TLS :443 —
       (lalu ws-bridge :10018 -> ws-shield :10017 -> sshd :22), dan
   (b) SSH mentah ("SSH-2.0-easyPro..." tanpa upgrade HTTP) -> nginx
       menolaknya 400, padahal itu SSH yang sah.
+  (c) gRPC h2c (preface "PRI * HTTP/2.0...") -> harus ke nginx :1013
+      (server http2 khusus gRPC). F-B3: :1010 TIDAK BOLEH http2, karena
+      itu mematikan WS; jadi preface HTTP/2 dirutekan ke :1013 di sini.
 Router ini mengintip 4 byte pertama aliran terdekripsi:
   - mulai "SSH-" (atau awalan "S"/"SS"/"SSH") -> teruskan ke sshd :22
+  - mulai "PRI " (preface HTTP/2) -> teruskan ke nginx gRPC :1013
   - selain itu (HTTP/WS) -> teruskan ke nginx :1010
   - tidak ada data dalam 2 dtk (mis. health-check haproxy) -> tutup saja.
 Byte yang sudah diintip diteruskan utuh ke backend terpilih, lalu
@@ -27,6 +31,8 @@ LISTEN_HOST = "127.0.0.1"
 LISTEN_PORT = 10019
 NGINX_HOST = "127.0.0.1"
 NGINX_PORT = 1010
+NGINX_GRPC_HOST = "127.0.0.1"
+NGINX_GRPC_PORT = 1013
 SSHD_HOST = "127.0.0.1"
 SSHD_PORT = 22
 PEEK_TIMEOUT = 2.0
@@ -38,11 +44,16 @@ def log(msg):
 
 
 def decide(buf):
-    """Tentukan backend dari byte awal. Kembalikan 'sshd'/'nginx'/None."""
+    """Tentukan backend dari byte awal. Kembalikan 'sshd'/'grpc'/'nginx'/None."""
     if not buf:
         return None
     if buf.startswith(b"SSH-"):
         return "sshd"
+    # Preface HTTP/2 cleartext: "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n" — 4 byte
+    # pertama "PRI ". Tidak bentrok dengan method HTTP: POST/PUT/PATCH
+    # diawali "POS"/"PUT"/"PAT", bukan "PRI ".
+    if buf.startswith(b"PRI "):
+        return "grpc"
     # Awalan parsial "S", "SS", "SSH" (kurang dari 4 byte karena timeout):
     # tak ada method HTTP yang diawali S, jadi anggap SSH.
     if len(buf) < 4 and b"SSH-"[:len(buf)] == buf:
@@ -94,6 +105,9 @@ def handle_client(conn, addr):
         if dest == "sshd":
             target = socket.create_connection((SSHD_HOST, SSHD_PORT), timeout=10)
             log(f"{addr} SSH mentah -> sshd :22 ({buf[:16]!r})")
+        elif dest == "grpc":
+            target = socket.create_connection((NGINX_GRPC_HOST, NGINX_GRPC_PORT), timeout=10)
+            log(f"{addr} gRPC h2c -> nginx :1013 ({buf[:16]!r})")
         else:
             target = socket.create_connection((NGINX_HOST, NGINX_PORT), timeout=10)
             # HTTP/WS ke nginx tidak perlu dilog tiap koneksi.
@@ -124,7 +138,7 @@ def main():
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((LISTEN_HOST, LISTEN_PORT))
     srv.listen(128)
-    log(f"listen {LISTEN_HOST}:{LISTEN_PORT} -> sshd :22 / nginx :1010")
+    log(f"listen {LISTEN_HOST}:{LISTEN_PORT} -> sshd :22 / nginx :1010 / grpc :1013")
     while True:
         conn, addr = srv.accept()
         threading.Thread(target=handle_client, args=(conn, addr),
