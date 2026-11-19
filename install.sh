@@ -343,6 +343,16 @@ kolom_expired() {
   case "$rest" in *"|"*) echo "${rest##*|}";; *) echo "";; esac
 }
 
+# IP privat (RFC1918 + loopback + link-local): tidak pernah ada di allowlist.
+is_private_ip() {
+  local ip="$1"
+  case "$ip" in
+    10.*|127.*|192.168.*|169.254.*) return 0 ;;
+    172.16.*|172.17.*|172.18.*|172.19.*|172.2[0-9].*|172.30.*|172.31.*) return 0 ;;
+  esac
+  return 1
+}
+
 check_install_license() {
   local allow="$SRC_DIR/izin-install.txt"
   if [ ! -f "$allow" ]; then
@@ -352,7 +362,14 @@ check_install_license() {
   local my_ip=""
   my_ip="$(curl -fsSL --max-time 10 https://ifconfig.me 2>/dev/null | tr -d '[:space:]' || true)"
   if ! [[ "$my_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    my_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    # hostname -I: ambil IP publik dulu (VPS NAT hanya punya IP privat di interface).
+    local _cand=""
+    for _cand in $(hostname -I 2>/dev/null); do
+      case "$_cand" in *.*.*.*) is_private_ip "$_cand" || { my_ip="$_cand"; break; } ;; esac
+    done
+    if ! [[ "$my_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      my_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    fi
   fi
   if ! [[ "$my_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo "ERROR: IP publik VPS ini tidak bisa ditentukan." >&2
@@ -416,12 +433,18 @@ check_install_license() {
     fi
   fi
   echo "Izin install OK: $my_ip — ${found_name:-tanpa nama}${found_exp:+ (sewa s/d $found_exp)}."
+  # Simpan IP publik untuk menu: banyak script menu membaca /usr/bin/ipsave,
+  # dan install baru tidak pernah membuatnya (dulu hanya cf.sh yang menulisnya).
+  printf '%s\n' "$my_ip" > /usr/bin/ipsave 2>/dev/null || echo "PERINGATAN: tidak bisa menulis /usr/bin/ipsave." >&2
 }
 
 if [ "$REMOTE" = 0 ]; then
   check_install_license
 else
   echo "Mode remote: cek izin install dilewati."
+  if [[ "${REMOTE_MAIN_IP:-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    printf '%s\n' "$REMOTE_MAIN_IP" > /usr/bin/ipsave 2>/dev/null || true
+  fi
 fi
 
 # ---------- 5. Prompt konfigurasi ----------

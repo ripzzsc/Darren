@@ -24,11 +24,37 @@ TOKEN_FILE="/etc/xray/izin-token"
 CACHE_TTL=3600
 LOG_FILE="/var/log/izin.log"
 
+# IP privat (RFC1918 + loopback + link-local): tidak pernah ada di allowlist.
+is_private_ip() {
+  local ip="$1"
+  case "$ip" in
+    10.*|127.*|192.168.*|169.254.*) return 0 ;;
+    172.16.*|172.17.*|172.18.*|172.19.*|172.2[0-9].*|172.30.*|172.31.*) return 0 ;;
+  esac
+  return 1
+}
+
 detect_ip() {
-  local ip=""
+  local ip="" cand=""
+  # 1. ipsave — hanya dipakai bila berisi IP publik.
   if [ -f /usr/bin/ipsave ]; then
-    ip="$(grep -m1 -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' /usr/bin/ipsave 2>/dev/null)"
+    cand="$(grep -m1 -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' /usr/bin/ipsave 2>/dev/null)"
+    if [ -n "$cand" ] && ! is_private_ip "$cand"; then ip="$cand"; fi
   fi
+  # 2. Alamat lokal — ambil yang publik dulu (VPS NAT hanya punya IP privat di interface).
+  if [ -z "$ip" ]; then
+    for cand in $(hostname -I 2>/dev/null); do
+      case "$cand" in
+        *.*.*.*) is_private_ip "$cand" || { ip="$cand"; break; } ;;
+      esac
+    done
+  fi
+  # 3. Tanya ke luar (VPS di belakang NAT: IP publik tidak ada di interface lokal).
+  if [ -z "$ip" ]; then
+    cand="$(curl -fsSL --max-time 8 https://ifconfig.me 2>/dev/null | tr -d '[:space:]' || true)"
+    if [[ "$cand" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && ! is_private_ip "$cand"; then ip="$cand"; fi
+  fi
+  # 4. Darurat: IP lokal pertama (privat) supaya pesan penolakan menyebut IP yang terdeteksi.
   if [ -z "$ip" ]; then
     ip="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -m1 -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')"
   fi
@@ -74,6 +100,12 @@ deny() {
 }
 
 [ -z "$MYIP" ] && deny "IP IPv4 VPS tidak terdeteksi"
+
+# VPS di belakang NAT (mis. Tencent Lighthouse) hanya punya IP privat di
+# interface lokal; izin memakai IP publik, jadi IP privat pasti ditolak.
+if is_private_ip "$MYIP"; then
+  deny "IP yang terdeteksi ($MYIP) adalah IP privat — VPS ini di belakang NAT, sedangkan izin memakai IP publik" "Perbaiki: tulis IP publik VPS ini ke /usr/bin/ipsave (misal: echo 1.2.3.4 > /usr/bin/ipsave), atau pastikan VPS bisa mengakses https://ifconfig.me, lalu jalankan ulang menu."
+fi
 
 TOKEN=""
 if [ -r "$TOKEN_FILE" ]; then
